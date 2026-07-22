@@ -1,0 +1,12 @@
+<evaluation>
+  <qa_pair><question>Which game does this MCP integrate with?</question><answer>BLACK SOULS</answer></qa_pair>
+  <qa_pair><question>Which engine does the in-game bridge target?</question><answer>RPG Maker VX Ace / RGSS3</answer></qa_pair>
+  <qa_pair><question>Which tool reads nearby tile passability and map events?</question><answer>black_souls_get_map</answer></qa_pair>
+  <qa_pair><question>Which tool reads scene, party, message, menu and battle state?</question><answer>black_souls_get_state</answer></qa_pair>
+  <qa_pair><question>Which tool batches keyboard actions and frame waits?</question><answer>black_souls_input_sequence</answer></qa_pair>
+  <qa_pair><question>Does the input API directly modify gold, inventory or story variables?</question><answer>No</answer></qa_pair>
+  <qa_pair><question>What bridge protocol identifier is used?</question><answer>black-souls-bridge/1</answer></qa_pair>
+  <qa_pair><question>Where are per-process bridge files stored relative to the prepared game copy?</question><answer>BridgeRuntime</answer></qa_pair>
+  <qa_pair><question>Which transport does the MCP server use?</question><answer>stdio</answer></qa_pair>
+  <qa_pair><question>Does background keyboard recovery move the game window to the foreground?</question><answer>No</answer></qa_pair>
+</evaluation>

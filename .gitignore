@@ -1,0 +1,42 @@
+# Node / TypeScript
+node_modules/
+dist/
+.npm-cache/
+*.tsbuildinfo
+
+# Local runtime and commercial game data
+runtime/
+game/
+BridgeRuntime/
+stage/
+backup/
+extract/
+logs/
+outputs/
+vendor/
+Save*.rvdata2
+*.rvdata2
+*.rgss3a
+*.rgss3a~
+Game.exe
+steam_api.dll
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local configuration and packages
+.env
+.env.*
+!.env.example
+*.zip
+*.7z
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

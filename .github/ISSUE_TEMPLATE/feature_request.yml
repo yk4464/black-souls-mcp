@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a focused improvement that stays within the project's local input/state scope.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What workflow is currently difficult?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the state, tool, or normal-input workflow you would like.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This request does not require redistributing game files or save data.
+          required: true
+        - label: This request keeps control local and does not require a network API.
+          required: true
