@@ -8,6 +8,7 @@ dist/
 runtime/
 game/
 BridgeRuntime/
+memory/
 stage/
 backup/
 extract/
