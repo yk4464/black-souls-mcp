@@ -5,7 +5,10 @@ import process from "node:process";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const suiteDeadline = Date.now() + 90000;
-const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve("dist/index.js")] });
+const childEnv = Object.fromEntries(
+  Object.entries(process.env).filter((entry) => typeof entry[1] === "string"),
+);
+const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve("dist/index.js")], env: childEnv });
 const client = new Client({ name: "black-souls-live-e2e", version: "1.0.0" });
 const call = async (name, args = {}) => {
   const remaining = suiteDeadline - Date.now();
@@ -48,8 +51,17 @@ try {
       await call("black_souls_input", { action: "move_down" });
     }
     await call("black_souls_input", { action: "confirm" });
-    await waitForScene("Scene_Load");
-    await call("black_souls_input_sequence", { steps: [{ action: "confirm" }, { wait_frames: 180 }], timeout_ms: 15000 });
+    // Tolerate both title flows: a Scene_Load slot picker, or a direct quick-continue.
+    const loadDeadline = Date.now() + 8000;
+    while (Date.now() < loadDeadline) {
+      const current = await call("black_souls_get_state");
+      if (current.scene?.name === "Scene_Map") break;
+      if (current.scene?.name === "Scene_Load") {
+        await call("black_souls_input_sequence", { steps: [{ action: "confirm" }, { wait_frames: 180 }], timeout_ms: 15000 });
+        break;
+      }
+      await sleep(150);
+    }
   }
   state = await waitForScene("Scene_Map", 15000);
   const before = { ...state.player };

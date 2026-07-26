@@ -18,7 +18,10 @@ try {
   process.exit(2);
 }
 
-const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve("dist/index.js")] });
+const childEnv = Object.fromEntries(
+  Object.entries(process.env).filter((entry) => typeof entry[1] === "string"),
+);
+const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve("dist/index.js")], env: childEnv });
 const client = new Client({ name: "black-souls-manual-check", version: "1.0.0" });
 try {
   await client.connect(transport);
