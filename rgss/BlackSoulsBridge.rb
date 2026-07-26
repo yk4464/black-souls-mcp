@@ -1,5 +1,6 @@
 # BLACK SOULS MCP bridge for RGSS3 / Ruby 1.9.
-# This script hooks Scene_Base#update and calls BlackSoulsBridge.update once per frame.
+# This script hooks Graphics.update (every rendered frame, including the engine's internal
+# wait loops) and falls back to Scene_Base#update if that alias is refused.
 
 module Input
   class << self
@@ -65,7 +66,7 @@ module Input
 end
 
 module BlackSoulsBridge
-  VERSION = "1.9.1"
+  VERSION = "1.10.0"
   PROTOCOL = "black-souls-bridge/1"
   ROOT = "BridgeRuntime"
   INBOX = ROOT + "/inbox"
@@ -416,6 +417,7 @@ module BlackSoulsBridge
     when "full_map" then query_full_map(params)
     when "event_detail" then query_event_detail(params)
     when "scene_detail" then query_scene_detail
+    when "battle_options" then query_battle_options
     else raise "unknown query: #{name}"
     end
   rescue => error
@@ -534,6 +536,83 @@ module BlackSoulsBridge
     append_error(error); { "found" => false, "error" => error.message }
   end
 
+  # Flatten every choice the acting battler can actually make this turn, including the
+  # contents of the skill / magic / item submenus, with the exact indices the input side
+  # needs. Without this an agent only ever sees the top-level command names and defaults
+  # to plain attacks, never discovering the rest of its kit.
+  def self.query_battle_options(params = nil)
+    return { "available" => false, "reason" => "not in battle" } unless defined?($game_party) && $game_party && safe_call($game_party, :in_battle, false)
+    actor = defined?(BattleManager) ? safe_call(BattleManager, :actor, nil) : nil
+    actor ||= safe_call($game_party, :members, []).first
+    return { "available" => false, "reason" => "no acting battler" } unless actor
+
+    commands = [{ "index" => 0, "action" => "attack", "label" => "attack" }]
+    skill_types = (safe_call(actor, :added_skill_types, []) || []).uniq.sort
+    action_names = ["skill", "magic"]
+    groups = []
+    skill_types.each_with_index do |stype_id, order|
+      type_name = ($data_system.skill_types[stype_id] rescue "") if defined?($data_system) && $data_system
+      commands << { "index" => commands.length, "action" => (action_names[order] || "skill"), "label" => type_name.to_s, "skill_type_id" => stype_id }
+      entries = []
+      (safe_call(actor, :skills, []) || []).each do |skill|
+        next unless skill && safe_call(skill, :stype_id, nil) == stype_id
+        entries << {
+          "index" => entries.length,
+          "id" => safe_call(skill, :id, 0),
+          "name" => safe_call(skill, :name, ""),
+          "mp_cost" => safe_call(actor, :skill_mp_cost, safe_call(skill, :mp_cost, 0), skill),
+          "tp_cost" => safe_call(actor, :skill_tp_cost, 0, skill),
+          "usable_now" => !!safe_call(actor, :usable?, false, skill),
+          "scope" => safe_call(skill, :scope, 0),
+          "description" => safe_call(skill, :description, "").to_s.split("\n").first.to_s
+        }
+      end
+      groups << { "action" => (action_names[order] || "skill"), "label" => type_name.to_s, "skill_type_id" => stype_id, "skills" => entries }
+    end
+    commands << { "index" => commands.length, "action" => "guard", "label" => "guard" }
+    commands << { "index" => commands.length, "action" => "item", "label" => "item" }
+
+    # Window_BattleItem lists $game_party.usable_items; older or customized builds may not
+    # define it, so fall back to asking the acting battler what it can actually use.
+    all_items = safe_call($game_party, :all_items, []) || []
+    usable = safe_call($game_party, :usable_items, nil)
+    usable = all_items.select { |item| !!safe_call(actor, :usable?, false, item) } if usable.nil?
+    items = []
+    all_items.each do |item|
+      next unless item && usable.include?(item)
+      items << {
+        "index" => items.length,
+        "id" => safe_call(item, :id, 0),
+        "name" => safe_call(item, :name, ""),
+        "count" => safe_call($game_party, :item_number, 0, item),
+        "usable_now" => !!safe_call(actor, :usable?, false, item),
+        "scope" => safe_call(item, :scope, 0),
+        "description" => safe_call(item, :description, "").to_s.split("\n").first.to_s
+      }
+    end
+
+    troop = defined?($game_troop) && $game_troop ? $game_troop : nil
+    living = troop ? (safe_call(troop, :alive_members, []) || []) : []
+    all_members = troop ? (safe_call(troop, :members, []) || []) : []
+    targets = []
+    living.each_with_index do |enemy, slot|
+      targets << {
+        "target_index" => slot,
+        "battler_index" => all_members.index(enemy) || slot,
+        "name" => safe_call(enemy, :name, ""),
+        "hp" => safe_call(enemy, :hp, 0),
+        "mhp" => safe_call(enemy, :mhp, 0)
+      }
+    end
+
+    { "available" => true, "actor" => { "name" => safe_call(actor, :name, ""), "hp" => safe_call(actor, :hp, 0), "mhp" => safe_call(actor, :mhp, 0),
+        "mp" => safe_call(actor, :mp, 0), "mmp" => safe_call(actor, :mmp, 0), "tp" => safe_call(actor, :tp, 0) },
+      "commands" => commands, "skill_groups" => groups, "items" => items, "enemy_targets" => targets,
+      "turn" => (troop ? safe_call(troop, :turn_count, nil) : nil) }
+  rescue => error
+    append_error(error); { "available" => false, "error" => error.message }
+  end
+
   def self.query_scene_detail
     scene = defined?(SceneManager) ? SceneManager.scene : nil
     return { "scene" => nil } unless scene
@@ -626,6 +705,7 @@ module BlackSoulsBridge
         "visible" => safe_call(value, :visible, false),
         "index" => safe_call(value, :index, -1),
         "item_max" => safe_call(value, :item_max, 0),
+        "col_max" => safe_call(value, :col_max, 1),
         "current_symbol" => safe_call(value, :current_symbol, nil)
       }
     elsif value.is_a?(Array)
@@ -796,19 +876,51 @@ module BlackSoulsBridge
   end
 
   def self.update
+    return if @in_update
+    @in_update = true
     initialize_bridge
     read_commands
     process_command
     write_snapshots
   rescue => error
     append_error(error)
+  ensure
+    @in_update = false
   end
+
+  def self.graphics_hook?
+    @graphics_hook == true
+  end
+
+  def self.graphics_hook_installed
+    @graphics_hook = true
+  end
+end
+
+# Primary tick: Graphics.update runs on every rendered frame INCLUDING the engine's
+# internal wait loops (battle victory settlement, message waits, transitions). Those
+# loops call Graphics.update and Input.update but never Scene_Base#update, so hooking
+# only the scene would leave the bridge dead exactly when a long cutscene is playing —
+# no snapshots (looks like a hung game) and no command reads (inputs cannot get in).
+begin
+  module Graphics
+    class << self
+      alias bsmcp_bridge_graphics_update update unless method_defined?(:bsmcp_bridge_graphics_update)
+      def update
+        bsmcp_bridge_graphics_update
+        BlackSoulsBridge.update
+      end
+    end
+  end
+  BlackSoulsBridge.graphics_hook_installed
+rescue Exception
+  # Fall back to the Scene_Base hook below if this build refuses the alias.
 end
 
 class Scene_Base
   alias bsmcp_bridge_update update unless method_defined?(:bsmcp_bridge_update)
   def update
-    BlackSoulsBridge.update
+    BlackSoulsBridge.update unless BlackSoulsBridge.graphics_hook?
     bsmcp_bridge_update
   end
 end
