@@ -1,5 +1,9 @@
 # BLACK SOULS MCP bridge for RGSS3 / Ruby 1.9.
-# This script hooks Scene_Base#update and calls BlackSoulsBridge.update once per frame.
+#
+# Installation: Insert this file as a new script entry ABOVE the existing "Main" entry
+# in the RPG Maker VX Ace Script Editor. Do NOT add a second rgss_main call.
+# The hook is installed via the Scene_Base#update alias at the bottom of this file;
+# the existing Main entry's rgss_main { SceneManager.run } starts the game as usual.
 
 module Input
   class << self
@@ -195,11 +199,11 @@ module BlackSoulsBridge
     begin
       File.rename(temp, path)
     rescue Errno::EACCES, Errno::EPERM
+      # Retry twice immediately (no sleep) to handle transient AV locks without
+      # blocking the game's frame loop. On persistent failure the error propagates
+      # to BlackSoulsBridge.update's rescue and is logged; the next frame retries.
       attempt += 1
-      if attempt < 6
-        sleep(0.015 * attempt)
-        retry
-      end
+      retry if attempt < 3
       raise
     ensure
       begin
@@ -308,6 +312,11 @@ module BlackSoulsBridge
   end
 
   def self.read_commands
+    # Throttle inbox scans to every 6 frames (~100 ms at 60 fps) to avoid
+    # per-frame directory I/O overhead. 100 ms is well within the 60-second
+    # command timeout and is invisible to the TS-side 16 ms poll interval.
+    @scan_frame = @scan_frame.to_i + 1
+    return unless @scan_frame % 6 == 0
     available = MAX_QUEUE - @queue.length - (@active ? 1 : 0)
     return if available <= 0
     Dir.glob(INBOX + "/*.cmd").sort.first([8, available].min).each do |path|
@@ -626,4 +635,5 @@ class Scene_Base
   end
 end
 
-rgss_main { SceneManager.run }
+# Do NOT add rgss_main here. The existing "Main" script entry already calls
+# rgss_main { SceneManager.run }; a second call would run the whole game twice.
