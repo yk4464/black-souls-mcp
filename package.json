@@ -26,7 +26,6 @@
   },
   "files": [
     "dist/",
-    "docs/",
     "examples/",
     "rgss/*.rb",
     "scripts/*.mjs",
