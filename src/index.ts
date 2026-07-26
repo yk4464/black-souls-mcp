@@ -8,7 +8,7 @@ import { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, 
 import { interact, navigate } from "./navigation.js";
 import { battleAction } from "./battle.js";
 
-const SERVER_VERSION = "1.8.1";
+const SERVER_VERSION = "1.9.0";
 const server = new McpServer({ name: "black-souls-mcp", version: SERVER_VERSION });
 const outputSchema = { data: z.unknown() };
 const result = (value: unknown) => ({
@@ -181,8 +181,8 @@ server.registerTool("black_souls_interact", {
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async ({ event_id, timeout_ms }) => execute(() => interact(event_id, timeout_ms)));
 server.registerTool("black_souls_battle_action", {
-  description: "Execute one battle turn and return resulting party and enemy state.",
-  inputSchema: { action: z.enum(["attack", "skill", "item", "guard", "flee"]), skill_index: z.number().int().min(0).max(99).optional(), item_index: z.number().int().min(0).max(99).optional(), enemy_index: z.number().int().min(0).max(19).optional(), timeout_ms: z.number().int().min(5000).max(60000).optional() }, outputSchema,
+  description: "Execute one battle turn in a single call: pick the command (attack / skill(特技) / magic(魔法) / guard / item / flee), the list index, and the enemy target; menu navigation is closed-loop against the real cursor. Returns resulting party and enemy state.",
+  inputSchema: { action: z.enum(["attack", "skill", "magic", "item", "guard", "flee"]), skill_index: z.number().int().min(0).max(99).optional(), item_index: z.number().int().min(0).max(99).optional(), enemy_index: z.number().int().min(0).max(19).optional(), timeout_ms: z.number().int().min(5000).max(60000).optional() }, outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async (args) => execute(() => battleAction(args.action, args.skill_index, args.item_index, args.enemy_index, args.timeout_ms)));
 server.registerTool("black_souls_advance_dialogue", {
@@ -192,7 +192,7 @@ server.registerTool("black_souls_advance_dialogue", {
 }, async (args) => execute(() => advanceDialogue(args.choice_index, args.max_advances, args.timeout_ms)));
 
 server.registerTool("black_souls_get_full_map", {
-  description: "Request map tiles, passability, regions, terrain tags, and events up to radius 20.",
+  description: "Request map tiles, passability, regions, terrain tags, and events up to radius 20. The scan runs inside one game frame: radius 6 is cheap, radius 20 freezes the game for about a second, so prefer 12 or less.",
   inputSchema: { radius: z.number().int().min(6).max(20).optional() }, outputSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, async ({ radius }) => execute(() => sendQuery("full_map", radius ? `radius=${radius}` : "")));

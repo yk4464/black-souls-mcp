@@ -65,7 +65,7 @@ module Input
 end
 
 module BlackSoulsBridge
-  VERSION = "1.8.1"
+  VERSION = "1.9.0"
   PROTOCOL = "black-souls-bridge/1"
   ROOT = "BridgeRuntime"
   INBOX = ROOT + "/inbox"
@@ -702,6 +702,7 @@ module BlackSoulsBridge
       "battle" => {
         "active" => defined?($game_party) && $game_party ? $game_party.in_battle : false,
         "phase" => (defined?(BattleManager) ? safe_call(BattleManager, :phase, safe_instance_variable(BattleManager, :@phase, nil)) : nil),
+        "turn" => (defined?($game_troop) && $game_troop ? safe_call($game_troop, :turn_count, nil) : nil),
         "enemies" => enemies.each_with_index.map { |enemy, index| enemy_summary(enemy, index) }
       }
     }

@@ -56,8 +56,10 @@ export async function navigate(targetX: number, targetY: number, timeoutMs = 300
   if (path === null) return { ok: false, start, target, steps_taken: 0, final_position: start, reached: false, message: "target out of current map radius; move closer first" };
   if (!path.length && (start.x !== target.x || start.y !== target.y)) return { ok: false, start, target, steps_taken: 0, final_position: start, reached: false, message: "no passable path to target" };
   if (path.length) {
+    // Live-measured: one map step takes ~16 frames; injected keys held for a single frame
+    // during the walk animation are dropped, so leave 18 frames between steps.
     const steps: SequenceStep[] = [];
-    for (const action of path) steps.push({ action }, { wait_frames: 2 });
+    for (const action of path) steps.push({ action }, { wait_frames: 18 });
     await sendSequence(steps, timeoutMs);
   }
   const finalPosition = pointFrom((await readState()).player); const reached = finalPosition.x === target.x && finalPosition.y === target.y;

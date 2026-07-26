@@ -251,15 +251,18 @@ function ensureSnapshotMatches(snapshot: Record<string, unknown>, status: Record
   if (String(snapshot.launch_token || "") !== String(status.launch_token || "")) throw new Error(`${kind} snapshot launch token mismatch`);
 }
 
+// State/map reads go through the wake-capable check: RPG Maker pauses its loop in the
+// background, and without a wake every read tool fails with stale_heartbeat after ~60s
+// of idling even though the game is healthy.
 export async function readState(): Promise<Record<string, unknown>> {
-  const status = await requireConnectedStatus();
+  const status = await requireInputReadyStatus();
   const state = await readStateSnapshot(String(status.launch_token));
   ensureSnapshotMatches(state, status, "State");
   return state;
 }
 
 export async function readMap(): Promise<Record<string, unknown>> {
-  const status = await requireConnectedStatus();
+  const status = await requireInputReadyStatus();
   const map = await readMapSnapshot(String(status.launch_token));
   ensureSnapshotMatches(map, status, "Map");
   return map;
@@ -429,7 +432,7 @@ export async function sendAction(action: Action, repeat = 1, timeoutMs = 60000) 
 }
 
 export interface SaveResult {
-  ok: boolean; slot: number; frame_before: number; frame_after: number;
+  ok: boolean; slot: number; saved: boolean; frame_before: number; frame_after: number;
   scene_after: string | null; message: string;
 }
 export interface LoadResult {
@@ -472,38 +475,161 @@ const sceneName = (state: Record<string, unknown>): string | null => {
   return typeof value === "string" ? value : null;
 };
 
+export interface CommandWindowInfo { class: string; active: boolean; index: number; item_max: number; current_symbol: string | null }
+export const windowsOf = (state: Record<string, unknown>): CommandWindowInfo[] => {
+  const raw = objectValue(state.scene).windows;
+  return (Array.isArray(raw) ? raw : []).map(objectValue).map((window) => ({
+    class: String(window.class || ""),
+    active: window.active === true,
+    index: Number(window.index ?? -1),
+    item_max: Number(window.item_max || 0),
+    current_symbol: typeof window.current_symbol === "string" ? window.current_symbol : null,
+  }));
+};
+export const activeWindowOf = (state: Record<string, unknown>): CommandWindowInfo | null =>
+  windowsOf(state).find((window) => window.active) || null;
+
+async function cursorStep(action: Action, timeoutMs: number, waitFrames = 6): Promise<Record<string, unknown>> {
+  await sendSequence([{ action }, { wait_frames: waitFrames }], timeoutMs);
+  return readState();
+}
+
+// Closed-loop command selection: rewind the active window's cursor to index 0, then walk
+// down until the requested occurrence of a symbol is under the cursor. Every step re-reads
+// the real cursor from the game, so sticky indices and dropped inputs self-correct.
+export async function selectCommandSymbol(symbol: string, occurrence = 0, timeoutMs = 15000): Promise<Record<string, unknown>> {
+  let state = await readState();
+  let window = activeWindowOf(state);
+  if (!window) throw new Error("No active command window to navigate");
+  const itemMax = Math.max(1, window.item_max);
+  for (let guard = 0; guard < itemMax * 2 && window.index > 0; guard += 1) {
+    const previous = window.index;
+    state = await cursorStep("move_up", timeoutMs);
+    window = activeWindowOf(state) ?? window;
+    if (window.index >= previous) break;
+  }
+  let matched = 0;
+  for (let step = 0; step < itemMax; step += 1) {
+    state = await readState();
+    window = activeWindowOf(state) ?? window;
+    if (window.current_symbol === symbol) {
+      if (matched === occurrence) return state;
+      matched += 1;
+    }
+    state = await cursorStep("move_down", timeoutMs);
+  }
+  throw new Error(`Command "${symbol}" (occurrence ${occurrence + 1}) was not found in the active window`);
+}
+
+// Closed-loop save-file slot selection driven by the scene's real file_index.
+export async function selectSavefileSlot(slot: number, timeoutMs = 20000): Promise<Record<string, unknown>> {
+  let stuck = 0;
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    const state = await readState();
+    const fileIndex = objectValue(state.scene).file_index;
+    if (fileIndex === null || fileIndex === undefined) throw new Error("The current scene has no save-file cursor");
+    const current = Number(fileIndex);
+    if (current === slot) return state;
+    const next = await cursorStep(current < slot ? "move_down" : "move_up", timeoutMs);
+    const after = Number(objectValue(next.scene).file_index ?? current);
+    if (after === current) {
+      stuck += 1;
+      if (stuck >= 3) throw new Error(`Save-file cursor is stuck at ${current} while targeting slot ${slot}`);
+    } else stuck = 0;
+  }
+  throw new Error(`Could not reach save slot ${slot}`);
+}
+
+const savefilePath = (slot: number) => path.join(gameDir(), `Save${String(slot + 1).padStart(2, "0")}.rvdata2`);
+const playerPosition = (state: Record<string, unknown>) => {
+  const player = objectValue(state.player);
+  const map = objectValue(state.map);
+  return Number.isFinite(Number(player.x)) && Number.isFinite(Number(player.y))
+    ? { x: Number(player.x), y: Number(player.y), map_id: Number(map.id || 0) } : null;
+};
+
 export async function triggerSave(slot: number, timeoutMs = 30000): Promise<SaveResult> {
   const before = await readState();
   const beforeScene = sceneName(before);
   if (beforeScene !== "Scene_Map") throw new Error(`Save is only available from Scene_Map (current: ${beforeScene || "unknown"})`);
-  const steps: SequenceStep[] = [{ action: "open_menu" }, { wait_frames: 8 }];
-  if (slot > 0) steps.push({ action: "move_down", repeat: slot });
-  steps.push({ action: "confirm" }, { wait_frames: 6 }, { action: "confirm" });
-  await sendSequence(steps, timeoutMs);
+  if (objectValue(before.message).busy) throw new Error("Save is unavailable while a message or choice is active");
+  const statBefore = await fs.stat(savefilePath(slot)).catch(() => null);
+  await sendSequence([{ action: "open_menu" }, { wait_frames: 12 }], timeoutMs);
+  try {
+    await selectCommandSymbol("save", 0, timeoutMs);
+    await sendSequence([{ action: "confirm" }, { wait_frames: 16 }], timeoutMs);
+    const saveScene = await readState();
+    if (sceneName(saveScene) !== "Scene_Save") throw new Error(`The save command did not open Scene_Save (got ${sceneName(saveScene) || "unknown"})`);
+    await selectSavefileSlot(slot, timeoutMs);
+    await sendSequence([{ action: "confirm" }, { wait_frames: 40 }], timeoutMs);
+  } finally {
+    for (let backOut = 0; backOut < 4; backOut += 1) {
+      const current = await readState().catch(() => null);
+      if (!current || sceneName(current) === "Scene_Map") break;
+      await sendSequence([{ action: "cancel" }, { wait_frames: 12 }], timeoutMs).catch(() => undefined);
+    }
+  }
+  const statAfter = await fs.stat(savefilePath(slot)).catch(() => null);
+  const saved = Boolean(statAfter && (!statBefore || statAfter.mtimeMs > statBefore.mtimeMs));
   const after = await readState();
-  return { ok: true, slot, frame_before: Number(before.frame || 0), frame_after: Number(after.frame || 0), scene_after: sceneName(after), message: "save input sequence completed; verify the save list" };
+  return {
+    ok: saved, slot, saved,
+    frame_before: Number(before.frame || 0), frame_after: Number(after.frame || 0),
+    scene_after: sceneName(after),
+    message: saved ? `save slot ${slot} was written and verified on disk` : "save inputs completed but the save file on disk did not change",
+  };
 }
 
 export async function triggerLoad(slot: number, timeoutMs = 30000): Promise<LoadResult> {
   const before = await readState();
   const beforeScene = sceneName(before);
-  const steps: SequenceStep[] = [];
   if (beforeScene === "Scene_Title") {
-    steps.push({ action: "confirm" }, { wait_frames: 10 });
-  } else if (beforeScene === "Scene_Map") {
-    steps.push({ action: "open_menu" }, { wait_frames: 8 }, { action: "move_down" }, { action: "confirm" }, { wait_frames: 8 });
-  } else {
-    throw new Error(`Load is only available from Scene_Title or Scene_Map (current: ${beforeScene || "unknown"})`);
+    await selectCommandSymbol("continue", 0, timeoutMs);
+    await sendSequence([{ action: "confirm" }, { wait_frames: 10 }], timeoutMs);
+    // Some builds open Scene_Load for slot selection; this game's title quick-continues
+    // straight into the newest save. Handle both.
+    let note = "";
+    const deadline = Date.now() + Math.min(timeoutMs, 10000);
+    while (Date.now() < deadline) {
+      const current = await readState();
+      const scene = sceneName(current);
+      if (scene === "Scene_Load") {
+        await selectSavefileSlot(slot, timeoutMs);
+        await sendSequence([{ action: "confirm" }, { wait_frames: 40 }], timeoutMs);
+        break;
+      }
+      if (scene === "Scene_Map") {
+        note = "; this game quick-continues into the most recent save, so the slot parameter was not used";
+        break;
+      }
+      await sleep(150);
+    }
+    const settled = await waitForCondition({ type: "scene", value: "Scene_Map" }, Math.min(timeoutMs, 15000));
+    const after = await readState();
+    return {
+      ok: settled.ok, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerPosition(after),
+      message: settled.ok ? `load completed${note}` : "load inputs were sent but Scene_Map did not appear in time",
+    };
   }
-  if (slot > 0) steps.push({ action: "move_down", repeat: slot });
-  steps.push({ action: "confirm" }, { wait_frames: 30 });
-  await sendSequence(steps, timeoutMs);
-  const after = await readState();
-  const player = objectValue(after.player);
-  const map = objectValue(after.map);
-  const playerAfter = Number.isFinite(Number(player.x)) && Number.isFinite(Number(player.y))
-    ? { x: Number(player.x), y: Number(player.y), map_id: Number(map.id || 0) } : null;
-  return { ok: true, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerAfter, message: "load input sequence completed; verify the resulting state" };
+  if (beforeScene === "Scene_Map") {
+    await sendSequence([{ action: "open_menu" }, { wait_frames: 12 }], timeoutMs);
+    try {
+      await selectCommandSymbol("load", 0, timeoutMs);
+    } catch {
+      await sendSequence([{ action: "cancel" }, { wait_frames: 12 }], timeoutMs).catch(() => undefined);
+      const state = await readState();
+      return {
+        ok: false, slot, scene_before: beforeScene, scene_after: sceneName(state), player_after: playerPosition(state),
+        message: "this game's in-game menu has no load command; use black_souls_kill + black_souls_launch, then load from the title screen",
+      };
+    }
+    await sendSequence([{ action: "confirm" }, { wait_frames: 16 }], timeoutMs);
+    await selectSavefileSlot(slot, timeoutMs);
+    await sendSequence([{ action: "confirm" }, { wait_frames: 40 }], timeoutMs);
+    const after = await readState();
+    return { ok: true, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerPosition(after), message: "load completed from the in-game menu" };
+  }
+  throw new Error(`Load is only available from Scene_Title or Scene_Map (current: ${beforeScene || "unknown"})`);
 }
 
 export interface DialogueResult { ok: boolean; lines_advanced: number; final_choices: string[]; dialogue_ended: boolean; scene_after: string | null; message: string }
@@ -542,7 +668,8 @@ export async function buildSituation(): Promise<SituationSnapshot> {
     mp: Number(member.mp || 0), mmp: Number(member.mmp || 0), tp: Number(member.tp || 0),
     level: Number(member.level || 0), alive: Number(member.hp || 0) > 0,
   }));
-  const enemies = (Array.isArray(battleRaw.enemies) ? battleRaw.enemies : []).map(objectValue).map((enemy) => ({
+  // $game_troop keeps the previous battle's members after it ends; only report enemies mid-battle.
+  const enemies = battleRaw.active !== true ? [] : (Array.isArray(battleRaw.enemies) ? battleRaw.enemies : []).map(objectValue).map((enemy) => ({
     name: String(enemy.name || ""), hp: Number(enemy.hp || 0), mhp: Number(enemy.mhp || 0), dead: Boolean(enemy.dead),
   }));
   const px = Number(playerRaw.x || 0); const py = Number(playerRaw.y || 0);
@@ -605,7 +732,7 @@ export async function bridgeHealth(): Promise<HealthReport> {
   let memoryOk = true; const memoryDir = path.join(installRoot(), "memory"); const probe = path.join(memoryDir, `.health-${process.pid}-${randomUUID()}.tmp`);
   try { await fs.mkdir(memoryDir, { recursive: true }); await fs.writeFile(probe, "ok", "ascii"); await fs.unlink(probe); } catch { memoryOk = false; await fs.unlink(probe).catch(() => undefined); }
   const issues: HealthIssue[] = []; const gameRunning = status.process_alive === true; const connected = status.connected === true;
-  if (!connected && !Number(status.pid || 0)) issues.push({ code: "game_not_running", severity: "critical", detail: "No live game process or bridge info snapshot was found" });
+  if (!connected && !gameRunning) issues.push({ code: "game_not_running", severity: "critical", detail: "No live game process was found" });
   if (gameRunning && stateAge !== null && stateAge > 5000) issues.push({ code: "stale_state", severity: "warning", detail: `State snapshot is ${stateAge}ms old` });
   let state: Record<string, unknown> | null = null; try { state = await readStateSnapshot(String(status.launch_token || "") || undefined); } catch { /* unavailable */ }
   if (gameRunning && stateAge !== null && stateAge > 3000 && objectValue(state?.scene).name == null) issues.push({ code: "scene_transition", severity: "info", detail: "Scene name remains unavailable during transition" });
