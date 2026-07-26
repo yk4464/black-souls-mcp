@@ -67,7 +67,7 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 | 常量 | TS 侧 | Ruby 侧 |
 |---|---|---|
 | 协议标识 `black-souls-bridge/1` | `BRIDGE_PROTOCOL` (bridge.ts) | `PROTOCOL` |
-| 版本号（当前 `1.8.1`） | `SERVER_VERSION` (index.ts) + `package.json` | `VERSION` |
+| 版本号（当前 `1.9.0`） | `SERVER_VERSION` (index.ts) + `package.json` | `VERSION` |
 | 动作白名单（10 个） | `ACTIONS` (bridge.ts) | `ALLOWED_ACTIONS` |
 | 队列上限 128 | `MAX_PENDING_COMMANDS` | `MAX_QUEUE` |
 | 序列步数上限 200 / 帧预算 3600 | `encodeSteps` | `MAX_SEQUENCE_STEPS` / `MAX_SEQUENCE_FRAMES` |
@@ -77,8 +77,10 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 - **命令超时 ≠ 未执行**。`sendSequence` 超时后尝试删 inbox 文件：删成功 = 游戏没取走；删不掉 = 可能已执行。错误信息区分两种情况，重试前先读最新状态。
 - **`dist/` 是构建产物**，不要直接编辑；`unit.mjs` 从 `dist/*.js` 导入，改 `src/` 后必须先 build 再 test。
 - **`runtime/`、`memory/`、`evals/results/` 保持未跟踪**。绝不提交游戏文件、存档、`BridgeRuntime/`、日志或 token。
-- **按键注入只保持 1 帧**，`repeat:N` 展开为"按键、等 1 帧"交替。菜单光标每帧响应所以没问题；地图移动一格约需 16 帧，连续 `repeat` 会被丢弃——地图上要用"单步 + `wait_frames`"的节奏。
-- 高层动作（save/load/battle/interact）的按键序列依赖具体游戏的菜单布局，属尽力而为；改动后需真机验证（`test:live`）。
+- **按键注入只保持 1 帧**，`repeat:N` 展开为"按键、等 1 帧"交替。菜单光标每帧响应所以没问题；地图移动一格约需 16 帧（实测），连续 `repeat` 会被丢弃——地图上要用"单步 + `wait_frames:18`"的节奏。
+- 高层动作（save/load/battle）的菜单导航是**闭环**的：`selectCommandSymbol` / `selectSavefileSlot`（bridge.ts）每步回读真实光标。实测布局：主菜单 7 项（save 在符号 `save`）；战斗指令窗 6 项 attack/skill(特技)/skill(魔法)/guard/item/escape；敌人窗横向排列用左右键。改动后用 `scripts/probe_live.mjs` 各套件重新测绘并跑 `test:live`。
+- **战斗回合演出期间引擎不处理桥接命令**（内部等待循环不回到 Scene_Base#update），提交类输入必须容忍超时并轮询状态恢复。
+- 游戏在后台约 60 秒后暂停帧循环；`readState`/`readMap` 走可唤醒检查自动恢复，`bridgeStatus`/`bridgeHealth` 保持被动只读。
 
 ## 代码风格与测试
 

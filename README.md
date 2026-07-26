@@ -45,7 +45,7 @@
 | 状态读取 | `black_souls_get_state` · `black_souls_get_map` · `black_souls_situation` · `black_souls_get_full_map` · `black_souls_get_event` · `black_souls_get_scene_detail` | 场景、角色、消息、菜单、战斗；附近或大范围地图；事件页与触发条件；场景深层状态 |
 | 游戏数据 | `black_souls_get_variables` · `black_souls_get_switches` · `black_souls_get_inventory` · `black_souls_get_party_detail` | 变量、开关、背包物品与装备、队伍详细属性和技能 |
 | 输入 | `black_souls_input` · `black_souls_input_sequence` · `black_souls_wait` | 白名单键盘动作、多步连续动作、等待某个游戏条件成立 |
-| 高层动作 | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | 自动寻路、走到事件旁交互、一次完成战斗指令、推进对话并选择选项、触发存档与读档 |
+| 高层动作 | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | 自动寻路、走到事件旁交互、一次调用完成战斗回合（攻击/特技/魔法/防御/道具/逃跑）、推进对话并选择选项、存档落盘校验与读档；菜单导航全部闭环回读真实光标，已通过真实游戏校准 |
 | AI 记忆 | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | 会话便签、长期游戏知识库、目标层级、持久会话日志，跨上下文重置保留 |
 | 评测 | `black_souls_eval_status` | 供 `evals/runner.mjs` 检查评测场景的完成条件 |
 

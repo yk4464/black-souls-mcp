@@ -1,12 +1,12 @@
 {
   "name": "basic_navigation",
-  "description": "From the loaded save position, walk to a nearby target tile. Adjust player_x/player_y to match your own save before running.",
+  "description": "From the loaded save position (map 21, 魔女之家 17,26), walk to the verified reachable tile (22,27). Adjust to your own save if it differs.",
   "save_slot": 0,
   "max_turns": 60,
   "completion_conditions": [
     { "type": "scene", "value": "Scene_Map" },
-    { "type": "player_x", "value": 16 },
-    { "type": "player_y", "value": 12 }
+    { "type": "player_x", "value": 22 },
+    { "type": "player_y", "value": 27 }
   ],
   "failure_conditions": [
     { "type": "turns_exceeded" },
