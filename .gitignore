@@ -14,6 +14,7 @@ backup/
 extract/
 logs/
 outputs/
+evals/results/
 vendor/
 Save*.rvdata2
 *.rvdata2

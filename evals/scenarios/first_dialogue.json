@@ -1,0 +1,16 @@
+{
+  "name": "first_dialogue",
+  "description": "Talk to a nearby NPC and finish the whole conversation, ending back on the field with no active dialogue.",
+  "save_slot": 0,
+  "max_turns": 60,
+  "completion_conditions": [
+    { "type": "scene", "value": "Scene_Map" },
+    { "type": "switch", "switch_id": 1, "value": true }
+  ],
+  "failure_conditions": [
+    { "type": "turns_exceeded" },
+    { "type": "all_party_dead" }
+  ],
+  "system_prompt_suffix": "Your goal is to complete a full NPC conversation. Replace the switch condition with a dialogue-progress switch ID from your own game data.",
+  "metrics": ["turns_to_complete"]
+}

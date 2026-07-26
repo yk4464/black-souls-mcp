@@ -1,0 +1,15 @@
+{
+  "name": "title_to_first_save",
+  "description": "Start from the title screen, load save slot 0, and arrive on a playable map.",
+  "save_slot": 0,
+  "max_turns": 50,
+  "completion_conditions": [
+    { "type": "scene", "value": "Scene_Map" }
+  ],
+  "failure_conditions": [
+    { "type": "turns_exceeded" },
+    { "type": "all_party_dead" }
+  ],
+  "system_prompt_suffix": "Your goal is to load save slot 0 and reach the field map.",
+  "metrics": ["turns_to_complete"]
+}

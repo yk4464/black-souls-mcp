@@ -1,0 +1,16 @@
+{
+  "name": "first_battle",
+  "description": "Enter a battle from the loaded save and finish it with the party alive.",
+  "save_slot": 0,
+  "max_turns": 80,
+  "completion_conditions": [
+    { "type": "scene", "value": "Scene_Map" },
+    { "type": "variable", "variable_id": 1, "value": 0 }
+  ],
+  "failure_conditions": [
+    { "type": "turns_exceeded" },
+    { "type": "all_party_dead" }
+  ],
+  "system_prompt_suffix": "Your goal is to win one battle and return to the field map with the party alive. Replace the variable condition with a battle-count variable ID from your own game data.",
+  "metrics": ["turns_to_complete", "deaths"]
+}

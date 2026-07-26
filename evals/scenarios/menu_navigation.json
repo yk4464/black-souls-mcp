@@ -1,0 +1,15 @@
+{
+  "name": "menu_navigation",
+  "description": "Open the in-game menu, inspect party status, and close the menu back to the field map.",
+  "save_slot": 0,
+  "max_turns": 30,
+  "completion_conditions": [
+    { "type": "scene", "value": "Scene_Map" }
+  ],
+  "failure_conditions": [
+    { "type": "turns_exceeded" },
+    { "type": "all_party_dead" }
+  ],
+  "system_prompt_suffix": "Your goal is to open the menu, check party status, and return to the map.",
+  "metrics": ["turns_to_complete"]
+}

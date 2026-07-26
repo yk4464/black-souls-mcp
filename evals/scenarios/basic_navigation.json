@@ -1,0 +1,17 @@
+{
+  "name": "basic_navigation",
+  "description": "From the loaded save position, walk to a nearby target tile. Adjust player_x/player_y to match your own save before running.",
+  "save_slot": 0,
+  "max_turns": 60,
+  "completion_conditions": [
+    { "type": "scene", "value": "Scene_Map" },
+    { "type": "player_x", "value": 16 },
+    { "type": "player_y", "value": 12 }
+  ],
+  "failure_conditions": [
+    { "type": "turns_exceeded" },
+    { "type": "all_party_dead" }
+  ],
+  "system_prompt_suffix": "Your goal is to walk the player to tile (16, 12) on the current map.",
+  "metrics": ["turns_to_complete"]
+}
