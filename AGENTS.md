@@ -22,7 +22,7 @@ Follow `.editorconfig`: UTF-8, two-space indentation, final newlines, and LF end
 
 ## Testing Guidelines
 
-Tests use `node:assert/strict` in `scripts/smoke.mjs` and `scripts/unit.mjs`. Add deterministic, synthetic cases to `unit.mjs`; update the smoke test for MCP handshake or tool-discovery changes. The 35 `black_souls_*` tools, their input bounds and annotations, and the `structuredContent.data` / `isError` response shape are public behavior; update smoke tests, README or architecture documentation, and version identifiers when changing them. Run integration tests for tool discovery, status, save-listing, or prepared-runtime changes. Run live tests for launch, state or map snapshots, input, sequencing, or Windows wake changes. There is no numeric coverage threshold, but behavior changes require regression coverage.
+Tests use `node:assert/strict` in `scripts/smoke.mjs` and `scripts/unit.mjs`. Add deterministic, synthetic cases to `unit.mjs`; update the smoke test for MCP handshake or tool-discovery changes. The 36 `black_souls_*` tools, their input bounds and annotations, and the `structuredContent.data` / `isError` response shape are public behavior; update smoke tests, README or architecture documentation, and version identifiers when changing them. Run integration tests for tool discovery, status, save-listing, or prepared-runtime changes. Run live tests for launch, state or map snapshots, input, sequencing, or Windows wake changes. There is no numeric coverage threshold, but behavior changes require regression coverage.
 
 ## Commit & Pull Request Guidelines
 

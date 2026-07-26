@@ -37,7 +37,7 @@ More accurate, faster, less likely to derail, and no multimodal model needed
 
 ## MCP tools
 
-35 tools in total, grouped by purpose:
+36 tools in total, grouped by purpose:
 
 | Group | Tools | Purpose |
 |---|---|---|
@@ -45,7 +45,7 @@ More accurate, faster, less likely to derail, and no multimodal model needed
 | State reading | `black_souls_get_state` · `black_souls_get_map` · `black_souls_situation` · `black_souls_get_full_map` · `black_souls_get_event` · `black_souls_get_scene_detail` | Scene, characters, messages, menus, battle; nearby or wide-range map; event pages and trigger conditions; deeper scene state |
 | Game data | `black_souls_get_variables` · `black_souls_get_switches` · `black_souls_get_inventory` · `black_souls_get_party_detail` | Variables, switches, inventory and equipment, detailed party stats and skills |
 | Input | `black_souls_input` · `black_souls_input_sequence` · `black_souls_wait` | Allowlisted keyboard actions, multi-step sequences, waiting for a game condition |
-| High-level actions | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | Automatic pathfinding, walk-up-and-interact, one-call battle turns (attack / skill / magic / guard / item / flee), dialogue advancing with choice selection, disk-verified saving and loading; all menu navigation is closed-loop against the real cursor and calibrated on the real game |
+| High-level actions | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_options` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | Automatic pathfinding, walk-up-and-interact, a full listing of every choice available this turn (including each skill and magic submenu entry with its cost and whether it is usable), one-call battle turns (attack / skill / magic / guard / item / flee), dialogue advancing with choice selection, disk-verified saving and loading; all menu navigation is closed-loop against the real cursor and calibrated on the real game |
 | AI memory | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | Session scratchpad, long-term game knowledge, goal hierarchy, persistent session log — all survive context resets |
 | Evals | `black_souls_eval_status` | Scenario completion checks for `evals/runner.mjs` |
 
