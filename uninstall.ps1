@@ -11,7 +11,20 @@ $backupName = "config.toml.before-black-souls-uninstall-{0}-{1}.bak" -f (Get-Dat
 $backup = Join-Path $backupDir $backupName
 Copy-Item -LiteralPath $CodexConfig -Destination $backup
 $content = [IO.File]::ReadAllText($CodexConfig)
-$pattern = '(?ms)^# BLACK_SOULS_MCP_BEGIN.*?^# BLACK_SOULS_MCP_END\r?\n?'
+
+# Refuse to touch a config whose markers are unbalanced. A non-greedy match across an
+# orphaned BEGIN would delete every unrelated setting up to the next END.
+$beginCount = [regex]::Matches($content, '(?m)^# BLACK_SOULS_MCP_BEGIN\r?$').Count
+$endCount = [regex]::Matches($content, '(?m)^# BLACK_SOULS_MCP_END\r?$').Count
+if ($beginCount -ne $endCount) {
+  throw "Unbalanced BLACK SOULS markers in ${CodexConfig} (BEGIN=$beginCount, END=$endCount). Repair the file manually, then re-run uninstall."
+}
+if ($beginCount -eq 0) {
+  Write-Host 'No BLACK SOULS MCP block found; the Codex config was left unchanged.'
+  exit 0
+}
+
+$pattern = '(?ms)^# BLACK_SOULS_MCP_BEGIN\r?$.*?^# BLACK_SOULS_MCP_END\r?$\r?\n?'
 $updated = [regex]::Replace($content, $pattern, '').TrimEnd() + "`r`n"
 [IO.File]::WriteAllText($CodexConfig, $updated, (New-Object Text.UTF8Encoding($false)))
 Write-Host 'BLACK SOULS MCP was removed from the Codex config.'

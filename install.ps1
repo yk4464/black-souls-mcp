@@ -40,7 +40,19 @@ if (Test-Path -LiteralPath $CodexConfig) {
 
 $begin = '# BLACK_SOULS_MCP_BEGIN'
 $end = '# BLACK_SOULS_MCP_END'
-$pattern = '(?ms)^' + [regex]::Escape($begin) + '.*?^' + [regex]::Escape($end) + '\r?\n?'
+
+# Refuse to touch a config whose markers are unbalanced. Rewriting it blindly would
+# let a later uninstall delete everything between an orphaned BEGIN and the new END.
+$beginCount = [regex]::Matches($content, '(?m)^' + [regex]::Escape($begin) + '\r?$').Count
+$endCount = [regex]::Matches($content, '(?m)^' + [regex]::Escape($end) + '\r?$').Count
+if ($beginCount -ne $endCount) {
+  throw "Unbalanced BLACK SOULS markers in ${CodexConfig} (BEGIN=$beginCount, END=$endCount). Repair the file manually, then re-run install."
+}
+if ($beginCount -gt 1) {
+  throw "Found $beginCount BLACK SOULS blocks in ${CodexConfig}. Remove the duplicates manually, then re-run install."
+}
+
+$pattern = '(?ms)^' + [regex]::Escape($begin) + '\r?$.*?^' + [regex]::Escape($end) + '\r?$\r?\n?'
 $content = [regex]::Replace($content, $pattern, '').TrimEnd()
 $nodeToml = $node.Replace('\', '/')
 $serverToml = $server.Replace('\', '/')

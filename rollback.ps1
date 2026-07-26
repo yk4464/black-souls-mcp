@@ -7,9 +7,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $backupDir = Join-Path $RuntimeRoot 'backup'
 if (-not $ConfigBackup) {
+  # Sort by the timestamp embedded in the file name rather than LastWriteTime, which
+  # copying or syncing the backup directory would distort. The yyyyMMdd-HHmmss-fff
+  # format sorts chronologically as a string; unrecognized names fall back to mtime.
   $ConfigBackup = Get-ChildItem -LiteralPath $backupDir -Filter 'config.toml.before-black-souls-*.bak' -File |
     Where-Object { $_.Name -notlike '*uninstall*' } |
-    Sort-Object LastWriteTime -Descending |
+    Sort-Object -Descending -Property @{ Expression = {
+      if ($_.Name -match 'before-black-souls-(\d{8}-\d{6}-\d{3})-') { $Matches[1] }
+      else { $_.LastWriteTime.ToString('yyyyMMdd-HHmmss-fff') }
+    } } |
     Select-Object -First 1 -ExpandProperty FullName
 }
 if (-not $ConfigBackup -or -not (Test-Path -LiteralPath $ConfigBackup)) { throw 'No Codex config backup was found.' }
