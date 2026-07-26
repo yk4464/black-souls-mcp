@@ -23,6 +23,9 @@ const mapDir = () => path.join(runtimeDir(), "map");
 const launchTokenFile = () => path.join(runtimeDir(), "launch.token");
 const TRANSIENT_FILE_CODES = new Set(["EACCES", "EPERM", "EBUSY", "ENFILE", "EMFILE"]);
 const HEARTBEAT_MAX_AGE_MS = 60000;
+// Remembered across calls so a failed snapshot read can still tell "the game died" apart
+// from "the game is alive but I could not read a file this instant".
+let lastKnownPid = 0;
 const MAX_PENDING_COMMANDS = 128;
 const MAX_SEQUENCE_FRAMES = 3600;
 const execFileAsync = promisify(execFile);
@@ -122,7 +125,10 @@ async function readNewestJson(
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       }
     }
-    if (scan < 3) await sleep(15 * (scan + 1));
+    // The writer rotates snapshots every few frames, so a scan can list a set of files that
+    // are all deleted before any of them is read. Back off past a whole rotation cycle
+    // instead of declaring the bridge gone after ~90ms of bad luck.
+    if (scan < 3) await sleep(60 * (scan + 1));
   }
   throw new Error(`No valid ${prefix} snapshot is available in ${runtimeDir()}: ${String(lastError || "not found")}`);
 }
@@ -147,15 +153,20 @@ function processIsAlive(pid: number): boolean {
 
 function statusFailure(status: Record<string, unknown>): Error {
   const reasons = Array.isArray(status.reasons) ? status.reasons.join(", ") : String(status.reason || "bridge unavailable");
-  return new Error(`BLACK SOULS bridge is not ready (${reasons}). Start the MCP edition with black_souls_launch.`);
+  const advice = status.process_alive === false
+    ? "Start the MCP edition with black_souls_launch."
+    : "The game process is still running, so do not relaunch it; wait a moment and read state again.";
+  return new Error(`BLACK SOULS bridge is not ready (${reasons}). ${advice}`);
 }
 
 export async function bridgeStatus(): Promise<Record<string, unknown>> {
   try {
     const info = await readInfo();
     const token = String(info.launch_token || "");
-    const state = await readStateSnapshot(token || undefined);
     const infoPid = Number(info.pid || 0);
+    // Recorded before the state read so a snapshot failure still knows which process to ask about.
+    if (infoPid > 0) lastKnownPid = infoPid;
+    const state = await readStateSnapshot(token || undefined);
     const statePid = Number(state.pid || 0);
     const updatedAt = Number(state.updated_at || 0) * 1000;
     const ageMs = Date.now() - updatedAt;
@@ -183,11 +194,17 @@ export async function bridgeStatus(): Promise<Record<string, unknown>> {
       reasons,
     };
   } catch (error) {
+    // Failing to read a snapshot says nothing about the game being alive. Claiming the
+    // process died here sent an earlier playtester chasing a phantom crash while the game
+    // was sitting on screen waiting for a keypress, so answer "unknown" unless the last
+    // known PID proves otherwise.
+    const alive = lastKnownPid > 0 ? processIsAlive(lastKnownPid) : null;
     return {
       connected: false,
-      process_alive: false,
+      process_alive: alive,
+      pid: lastKnownPid > 0 ? lastKnownPid : null,
       runtime_directory: runtimeDir(),
-      reasons: ["bridge_files_unavailable"],
+      reasons: [alive === true ? "bridge_files_unreadable_process_alive" : "bridge_files_unavailable"],
       reason: error instanceof Error ? error.message : String(error),
     };
   }
@@ -218,28 +235,49 @@ async function wakeWindowsGameLoop(pid: number): Promise<void> {
   });
 }
 
+// RPG Maker suspends its whole frame loop whenever the window is not active, which a
+// minimized window always is. Waiting for the 60s heartbeat limit before reacting made
+// every call after an idle moment stall for a minute, so nudge as soon as the snapshot
+// stops being fresh — the game is asleep, not broken.
+const HEARTBEAT_NUDGE_MS = 1200;
+
 async function requireInputReadyStatus(): Promise<Record<string, unknown>> {
   let status = await bridgeStatus();
   const reasons = Array.isArray(status.reasons) ? status.reasons.map(String) : [];
   const pid = Number(status.pid || 0);
-  const wakeable = status.connected !== true
-    && status.process_alive === true
+  const heartbeatAge = Number(status.heartbeat_age_ms ?? Number.POSITIVE_INFINITY);
+  const wakeable = status.process_alive === true
     && Number.isInteger(pid) && pid > 0
-    && reasons.every((reason) => reason === "stale_heartbeat");
+    && reasons.every((reason) => reason === "stale_heartbeat")
+    && (status.connected !== true || !Number.isFinite(heartbeatAge) || heartbeatAge > HEARTBEAT_NUDGE_MS);
   if (process.platform === "win32" && wakeable) {
     const previousFrame = Number(status.frame || 0);
-    try {
-      await wakeWindowsGameLoop(pid);
-    } catch (error) {
-      throw new Error(`Could not wake the BLACK SOULS keyboard loop for PID ${pid}: ${String(error)}`);
+    // Long in-engine cutscenes (battle settlement, transitions) can hold the loop for a
+    // while, so retry the wake instead of giving up after one nudge.
+    const connectedBefore = status.connected === true;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await wakeWindowsGameLoop(pid);
+      } catch (error) {
+        // A merely-drowsy bridge is still usable, so never let a failed nudge break a
+        // call that would otherwise succeed; only a disconnected bridge is fatal.
+        if (connectedBefore) return status;
+        if (!processIsAlive(pid)) throw new Error(`BLACK SOULS PID ${pid} is no longer running; call black_souls_launch to restart it`);
+        throw new Error(`Could not wake the BLACK SOULS keyboard loop for PID ${pid}: ${String(error)}`);
+      }
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        await sleep(50);
+        status = await bridgeStatus();
+        if (status.connected === true && Number(status.frame || 0) > previousFrame) return status;
+      }
+      if (!processIsAlive(pid)) break;
     }
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      await sleep(50);
-      status = await bridgeStatus();
-      if (status.connected === true && Number(status.frame || 0) > previousFrame) return status;
+    if (!processIsAlive(pid)) {
+      throw new Error(`BLACK SOULS PID ${pid} exited while the bridge was waiting for it; the game is gone, call black_souls_launch to restart`);
     }
-    throw new Error(`BLACK SOULS PID ${pid} did not resume its keyboard loop after a background wake command`);
+    if (status.connected === true) return status;
+    throw new Error(`BLACK SOULS PID ${pid} is still running but published no new frame within 15s. The game is alive — it is most likely inside a long in-engine cutscene or waiting on a modal prompt. Read state again in a few seconds before assuming anything failed.`);
   }
   if (status.connected !== true) throw statusFailure(status);
   return status;
@@ -301,6 +339,20 @@ async function writeCommand(finalPath: string, payload: string): Promise<void> {
   }
 }
 
+// A suspended game will not pick a command out of the inbox at all, so keep nudging it
+// awake for as long as we are waiting on a response instead of letting it sleep.
+function commandLoopNudger(pid: number): () => Promise<void> {
+  let nextNudge = Date.now() + 1500;
+  let running = false;
+  return async () => {
+    if (process.platform !== "win32" || running || Date.now() < nextNudge) return;
+    if (!Number.isInteger(pid) || pid <= 0 || !processIsAlive(pid)) return;
+    running = true;
+    try { await wakeWindowsGameLoop(pid); } catch { /* best effort; the poll loop reports real failures */ }
+    finally { running = false; nextNudge = Date.now() + 1500; }
+  };
+}
+
 async function stateAtOrAfter(token: string, frame: number, timeoutMs = 1200): Promise<Record<string, unknown> | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -329,6 +381,7 @@ export async function sendSequence(steps: SequenceStep[], timeoutMs = 60000): Pr
   const payload = `id=${id}\ntoken=${launchToken}\nsteps=${encodeSteps(steps)}\n`;
   await writeCommand(finalPath, payload);
 
+  const nudge = commandLoopNudger(Number(status.pid || 0));
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -355,6 +408,7 @@ export async function sendSequence(steps: SequenceStep[], timeoutMs = 60000): Pr
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && !(error instanceof BridgeJsonUnavailableError)) throw error;
     }
+    await nudge();
     await sleep(16);
   }
   let removedBeforePickup = false;
@@ -385,6 +439,7 @@ export async function sendQuery(queryName: string, params = "", timeoutMs = 1000
   const finalPath = path.join(inboxDir(), `${id}.cmd`);
   const responsePath = path.join(outboxDir(), `${id}.json`);
   await writeCommand(finalPath, `id=${id}\ntoken=${launchToken}\ntype=query\nquery=${queryName}\nparams=${params}\n`);
+  const nudge = commandLoopNudger(Number(status.pid || 0));
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -398,6 +453,7 @@ export async function sendQuery(queryName: string, params = "", timeoutMs = 1000
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && !(error instanceof BridgeJsonUnavailableError)) throw error;
     }
+    await nudge();
     await sleep(16);
   }
   let removedBeforePickup = false;
@@ -475,7 +531,7 @@ const sceneName = (state: Record<string, unknown>): string | null => {
   return typeof value === "string" ? value : null;
 };
 
-export interface CommandWindowInfo { class: string; active: boolean; index: number; item_max: number; current_symbol: string | null }
+export interface CommandWindowInfo { class: string; active: boolean; index: number; item_max: number; col_max: number; current_symbol: string | null }
 export const windowsOf = (state: Record<string, unknown>): CommandWindowInfo[] => {
   const raw = objectValue(state.scene).windows;
   return (Array.isArray(raw) ? raw : []).map(objectValue).map((window) => ({
@@ -483,6 +539,7 @@ export const windowsOf = (state: Record<string, unknown>): CommandWindowInfo[] =
     active: window.active === true,
     index: Number(window.index ?? -1),
     item_max: Number(window.item_max || 0),
+    col_max: Math.max(1, Number(window.col_max || 1)),
     current_symbol: typeof window.current_symbol === "string" ? window.current_symbol : null,
   }));
 };
@@ -509,16 +566,59 @@ export async function selectCommandSymbol(symbol: string, occurrence = 0, timeou
     if (window.index >= previous) break;
   }
   let matched = 0;
+  const startClass = window.class;
+  const seen: string[] = [];
   for (let step = 0; step < itemMax; step += 1) {
     state = await readState();
-    window = activeWindowOf(state) ?? window;
+    // A window can read as inactive for a frame or two during a fade-in, so give it a
+    // moment. If it never comes back the menu really did close under us, and reusing the
+    // previous reading would keep pressing keys into whatever opened next.
+    let current = activeWindowOf(state);
+    for (let retry = 0; !current && retry < 10; retry += 1) {
+      await sleep(250);
+      state = await readState();
+      current = activeWindowOf(state);
+    }
+    if (!current) throw new Error(`The ${startClass} menu closed while looking for "${symbol}" (cursor path so far: ${seen.join(", ") || "none"}); read state and retry`);
+    window = current;
+    if (window.class !== startClass) {
+      throw new Error(`The active window changed from ${startClass} to ${window.class} while looking for "${symbol}"`);
+    }
+    seen.push(`${window.index}=${window.current_symbol ?? "null"}`);
     if (window.current_symbol === symbol) {
       if (matched === occurrence) return state;
       matched += 1;
     }
     state = await cursorStep("move_down", timeoutMs);
   }
-  throw new Error(`Command "${symbol}" (occurrence ${occurrence + 1}) was not found in the active window`);
+  throw new Error(`Command "${symbol}" (occurrence ${occurrence + 1}) was not found in ${startClass}; the cursor walked over ${seen.join(", ")}`);
+}
+
+// Closed-loop cursor movement inside any Window_Selectable, grid aware: RPG Maker lays
+// item and skill windows out in 2 columns, so the neighbour to the right is index+1 while
+// down is index+col_max. Every step re-reads the real cursor, so sticky positions,
+// wrap-around and dropped inputs self-correct.
+export async function selectWindowIndex(target: number, timeoutMs = 15000): Promise<Record<string, unknown>> {
+  let stuck = 0;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const state = await readState();
+    const window = activeWindowOf(state);
+    if (!window) throw new Error("The selection window disappeared while navigating");
+    if (window.index === target) return state;
+    if (target >= window.item_max) throw new Error(`Selection index ${target} is out of range (${window.item_max} entries)`);
+    const delta = target - window.index;
+    const columns = window.col_max;
+    const action: Action = delta >= columns ? "move_down"
+      : delta > 0 ? "move_right"
+      : delta <= -columns ? "move_up"
+      : "move_left";
+    const after = activeWindowOf(await cursorStep(action, timeoutMs));
+    if (after && after.index === window.index) {
+      stuck += 1;
+      if (stuck >= 4) throw new Error(`Selection cursor is stuck at ${window.index} while targeting ${target}`);
+    } else stuck = 0;
+  }
+  throw new Error(`Could not reach selection index ${target}`);
 }
 
 // Closed-loop save-file slot selection driven by the scene's real file_index.
@@ -583,6 +683,18 @@ export async function triggerSave(slot: number, timeoutMs = 30000): Promise<Save
 export async function triggerLoad(slot: number, timeoutMs = 30000): Promise<LoadResult> {
   const before = await readState();
   const beforeScene = sceneName(before);
+  // A previous attempt may have already opened the file list (a timed-out command often
+  // still lands), so treat Scene_Load as a resumable mid-point rather than an error.
+  if (beforeScene === "Scene_Load") {
+    await selectSavefileSlot(slot, timeoutMs);
+    await sendSequence([{ action: "confirm" }, { wait_frames: 40 }], timeoutMs);
+    const settled = await waitForCondition({ type: "scene", value: "Scene_Map" }, Math.min(timeoutMs, 15000));
+    const after = await readState();
+    return {
+      ok: settled.ok, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerPosition(after),
+      message: settled.ok ? "load completed from the already-open file list" : "load inputs were sent but Scene_Map did not appear in time",
+    };
+  }
   if (beforeScene === "Scene_Title") {
     await selectCommandSymbol("continue", 0, timeoutMs);
     await sendSequence([{ action: "confirm" }, { wait_frames: 10 }], timeoutMs);
@@ -629,7 +741,7 @@ export async function triggerLoad(slot: number, timeoutMs = 30000): Promise<Load
     const after = await readState();
     return { ok: true, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerPosition(after), message: "load completed from the in-game menu" };
   }
-  throw new Error(`Load is only available from Scene_Title or Scene_Map (current: ${beforeScene || "unknown"})`);
+  throw new Error(`Load is only available from Scene_Title, Scene_Load or Scene_Map (current: ${beforeScene || "unknown"})`);
 }
 
 export interface DialogueResult { ok: boolean; lines_advanced: number; final_choices: string[]; dialogue_ended: boolean; scene_after: string | null; message: string }
@@ -732,7 +844,11 @@ export async function bridgeHealth(): Promise<HealthReport> {
   let memoryOk = true; const memoryDir = path.join(installRoot(), "memory"); const probe = path.join(memoryDir, `.health-${process.pid}-${randomUUID()}.tmp`);
   try { await fs.mkdir(memoryDir, { recursive: true }); await fs.writeFile(probe, "ok", "ascii"); await fs.unlink(probe); } catch { memoryOk = false; await fs.unlink(probe).catch(() => undefined); }
   const issues: HealthIssue[] = []; const gameRunning = status.process_alive === true; const connected = status.connected === true;
-  if (!connected && !gameRunning) issues.push({ code: "game_not_running", severity: "critical", detail: "No live game process was found" });
+  // Failing to read a snapshot is not evidence the game died. Saying so anyway makes
+  // callers kill a healthy game, so only claim death when the PID itself is gone.
+  const unreadable = Array.isArray(status.reasons) && status.reasons.some((reason) => String(reason).startsWith("bridge_files_"));
+  if (!connected && unreadable && status.process_alive !== false) issues.push({ code: "bridge_unreadable", severity: "warning", detail: "Bridge snapshots could not be read; the game may still be running and simply not writing right now" });
+  else if (!connected && !gameRunning) issues.push({ code: "game_not_running", severity: "critical", detail: "No live game process was found" });
   if (gameRunning && stateAge !== null && stateAge > 5000) issues.push({ code: "stale_state", severity: "warning", detail: `State snapshot is ${stateAge}ms old` });
   let state: Record<string, unknown> | null = null; try { state = await readStateSnapshot(String(status.launch_token || "") || undefined); } catch { /* unavailable */ }
   if (gameRunning && stateAge !== null && stateAge > 3000 && objectValue(state?.scene).name == null) issues.push({ code: "scene_transition", severity: "info", detail: "Scene name remains unavailable during transition" });
@@ -743,6 +859,7 @@ export async function bridgeHealth(): Promise<HealthReport> {
   let recommended = "All systems nominal; proceed with gameplay";
   if (issues.some((issue) => issue.code === "stuck_command")) recommended = "Call black_souls_kill then black_souls_launch to reset the bridge";
   else if (issues.some((issue) => issue.code === "game_not_running")) recommended = "Call black_souls_launch to start the game";
+  else if (issues.some((issue) => issue.code === "bridge_unreadable")) recommended = "Wait a few seconds and read state again; do not kill the game, it is probably alive";
   else if (issues.some((issue) => issue.code === "stale_state")) recommended = "Wait 2 seconds and retry; bridge may be recovering from scene transition";
   else if (issues.some((issue) => issue.severity === "critical")) recommended = "Resolve the critical health issue before continuing";
   return { ok: !issues.some((issue) => issue.severity === "critical"), game_running: gameRunning, bridge_connected: connected, state_age_ms: stateAge, map_age_ms: mapAge, last_error_log: lastError, inbox_pending: inbox.length, outbox_orphaned: orphaned.length, memory_ok: memoryOk, issues, recommended_action: recommended };

@@ -48,8 +48,18 @@ const tilesFrom = (map: Record<string, unknown>): MapTile[] => (Array.isArray(ma
   return { x: Number(tile.x), y: Number(tile.y), passable: { up: Boolean(passable.up), down: Boolean(passable.down), left: Boolean(passable.left), right: Boolean(passable.right) } };
 });
 
+// Direction keys mean "move the cursor" in any menu, and confirm activates whatever is
+// selected — a stray navigate/interact from Scene_Menu once wrapped the cursor onto
+// "end game". Never send movement unless the player is genuinely standing on the map.
+export async function requireFieldControl(state: Record<string, unknown>, tool: string): Promise<void> {
+  const scene = sceneFrom(state);
+  if (scene !== "Scene_Map") throw new Error(`${tool} needs the player on the map, but the current scene is ${scene || "unknown"}. Leave the menu first (black_souls_input with cancel) and retry.`);
+  if (objectValue(state.message).busy) throw new Error(`${tool} cannot move the player while a message or choice is on screen; use black_souls_advance_dialogue first.`);
+}
+
 export async function navigate(targetX: number, targetY: number, timeoutMs = 30000): Promise<NavigateResult> {
   const [map, state] = await Promise.all([readMap(), readState()]);
+  await requireFieldControl(state, "black_souls_navigate");
   const start = pointFrom(state.player); const target = { x: targetX, y: targetY };
   const radius = Math.min(6, Number(map.radius || 6));
   const path = findPath(tilesFrom(map), start, target, radius);
@@ -67,7 +77,9 @@ export async function navigate(targetX: number, targetY: number, timeoutMs = 300
 }
 
 export async function interact(eventId?: number, timeoutMs = 20000): Promise<InteractResult> {
-  const [map, state] = await Promise.all([readMap(), readState()]); const player = pointFrom(state.player);
+  const [map, state] = await Promise.all([readMap(), readState()]);
+  await requireFieldControl(state, "black_souls_interact");
+  const player = pointFrom(state.player);
   const events = (Array.isArray(map.events) ? map.events : []).map(objectValue);
   let event = eventId === undefined ? null : events.find((item) => Number(item.id) === eventId) || null;
   if (!event) {
@@ -84,7 +96,7 @@ export async function interact(eventId?: number, timeoutMs = 20000): Promise<Int
   if (key(chosen.point) !== key(player)) { const moved = await navigate(chosen.point.x, chosen.point.y, timeoutMs); if (!moved.reached) return { ok: false, event_id: Number(event.id), event_name: String(event.name || ""), navigated: true, message_after: null, choices_after: [], scene_after: sceneFrom(state), message: moved.message }; navigated = true; }
   const dx = target.x - chosen.point.x; const dy = target.y - chosen.point.y;
   const face = directions.find((direction) => direction.dx === dx && direction.dy === dy)?.action;
-  const steps: SequenceStep[] = []; if (face) steps.push({ action: face }, { wait_frames: 2 }); steps.push({ action: "confirm" }, { wait_frames: 10 });
+  const steps: SequenceStep[] = []; if (face) steps.push({ action: face }, { wait_frames: 18 }); steps.push({ action: "confirm" }, { wait_frames: 12 });
   await sendSequence(steps, timeoutMs); const after = await readState(); const message = objectValue(after.message);
   return { ok: true, event_id: Number(event.id), event_name: String(event.name || ""), navigated, message_after: typeof message.text === "string" && message.text ? message.text : null, choices_after: Array.isArray(message.choices) ? message.choices.map(String) : [], scene_after: sceneFrom(after), message: "interaction input completed" };
 }
