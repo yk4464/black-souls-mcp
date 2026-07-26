@@ -37,15 +37,17 @@ More accurate, faster, less likely to derail, and no multimodal model needed
 
 ## MCP tools
 
-| Tool | Purpose |
-|---|---|
-| `black_souls_status` | Check game files, process, and bridge status |
-| `black_souls_launch` | Launch the prepared standalone game copy |
-| `black_souls_get_state` | Read scene, characters, messages, menus, and battle info |
-| `black_souls_get_map` | Read nearby tiles, passability, and events |
-| `black_souls_input` | Perform one allowlisted keyboard action |
-| `black_souls_input_sequence` | Submit multiple actions and frame waits at once |
-| `black_souls_list_saves` | List saves in the standalone game copy |
+35 tools in total, grouped by purpose:
+
+| Group | Tools | Purpose |
+|---|---|---|
+| Process & diagnostics | `black_souls_status` · `black_souls_launch` · `black_souls_kill` · `black_souls_list_saves` · `black_souls_health` | Check game files and bridge, launch or force-quit the game, list saves, one-call self-diagnosis with a recovery recommendation |
+| State reading | `black_souls_get_state` · `black_souls_get_map` · `black_souls_situation` · `black_souls_get_full_map` · `black_souls_get_event` · `black_souls_get_scene_detail` | Scene, characters, messages, menus, battle; nearby or wide-range map; event pages and trigger conditions; deeper scene state |
+| Game data | `black_souls_get_variables` · `black_souls_get_switches` · `black_souls_get_inventory` · `black_souls_get_party_detail` | Variables, switches, inventory and equipment, detailed party stats and skills |
+| Input | `black_souls_input` · `black_souls_input_sequence` · `black_souls_wait` | Allowlisted keyboard actions, multi-step sequences, waiting for a game condition |
+| High-level actions | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | Automatic pathfinding, walk-up-and-interact, one-call battle turns, dialogue advancing with choice selection, triggering save and load |
+| AI memory | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | Session scratchpad, long-term game knowledge, goal hierarchy, persistent session log — all survive context resets |
+| Evals | `black_souls_eval_status` | Scenario completion checks for `evals/runner.mjs` |
 
 ## How it works
 
@@ -62,7 +64,7 @@ BridgeRuntime
 Your prepared standalone BLACK SOULS copy
 ```
 
-The bridge script refreshes state roughly 10 times per second; a new map snapshot is generated only when the position or map changes. Commands are processed frame by frame by the game's main thread, independent of window focus and of visual recognition. See [docs/ARCHITECTURE.md](https://github.com/yk4464/black-souls-mcp/blob/main/docs/ARCHITECTURE.md) for the detailed design.
+The bridge script refreshes state roughly 10 times per second; a new map snapshot is generated only when the position or map changes. Commands are processed frame by frame by the game's main thread, independent of window focus and of visual recognition. Query commands (variables, switches, inventory, full map, and so on) travel the same channel and are answered instantly without frame stepping.
 
 ## Project status
 
@@ -109,7 +111,12 @@ runtime/
 └─ backup/
 ```
 
-`runtime/` is Git-ignored. For the full copy preparation, bridge writing, and version verification steps, see the [Chinese setup guide](https://github.com/yk4464/black-souls-mcp/blob/main/docs/SETUP.zh-CN.md).
+`runtime/` is Git-ignored. Preparation in short: copy your own game files into `runtime/game/`, make sure `Data/Scripts.rvdata2` is extracted (use `scripts/extract_rgss3a_file.py` if needed), then inject `rgss/BlackSoulsBridge.rb` into the script archive:
+
+```powershell
+python -m pip install -r requirements-tools.txt
+python .\scripts\patch_rvdata2.py .\runtime\game\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts.rvdata2.bak
+```
 
 ### 3. Install into Codex
 
@@ -189,6 +196,7 @@ npm.cmd run check              # Build, MCP handshake, tool discovery, and synth
 npm.cmd run test:integration   # Requires a prepared runtime directory
 npm.cmd run test:live          # Launches the game and performs real keyboard input
 .\check.ps1 -IncludeRuntime    # Checks source, game copy, and Codex registration
+node evals\runner.mjs menu_navigation   # Run one eval scenario (requires the real game)
 ```
 
 Live tests change the position or menu state of the current game session, but never save on their own. Keeping a copy of your own saves before running them is still recommended.
