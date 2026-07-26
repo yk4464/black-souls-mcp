@@ -369,8 +369,309 @@ export async function sendSequence(steps: SequenceStep[], timeoutMs = 60000): Pr
   throw new Error(`Bridge command ${id} timed out after ${timeoutMs}ms (${detail}; ${execution})`);
 }
 
+export async function sendQuery(queryName: string, params = "", timeoutMs = 10000): Promise<unknown> {
+  if (!/^[a-z_]{1,64}$/.test(queryName)) throw new Error("Invalid query name");
+  if (params.length > 1024 || /[\r\n]/.test(params)) throw new Error("Invalid query params");
+  const status = await requireInputReadyStatus();
+  const launchToken = String(status.launch_token || "");
+  await fs.mkdir(inboxDir(), { recursive: true });
+  await fs.mkdir(outboxDir(), { recursive: true });
+  const pendingCommands = (await fs.readdir(inboxDir())).filter((name) => name.endsWith(".cmd")).length;
+  if (pendingCommands >= MAX_PENDING_COMMANDS) throw new Error(`Bridge command queue is full (${pendingCommands}/${MAX_PENDING_COMMANDS})`);
+  const id = randomUUID().replaceAll("-", "");
+  const finalPath = path.join(inboxDir(), `${id}.cmd`);
+  const responsePath = path.join(outboxDir(), `${id}.json`);
+  await writeCommand(finalPath, `id=${id}\ntoken=${launchToken}\ntype=query\nquery=${queryName}\nparams=${params}\n`);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await readJsonWithRetry<Record<string, unknown>>(responsePath, 2);
+      if (String(response.id || "") !== id) throw new Error(`Bridge response command ID mismatch for ${id}`);
+      if (String(response.launch_token || "") !== launchToken) throw new Error(`Bridge response launch token mismatch for ${id}`);
+      await fs.unlink(responsePath).catch(() => undefined);
+      if (response.ok === false) throw new Error(String(response.error || "Bridge rejected query"));
+      return response.data;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && !(error instanceof BridgeJsonUnavailableError)) throw error;
+    }
+    await sleep(16);
+  }
+  let removedBeforePickup = false;
+  try { await fs.unlink(finalPath); removedBeforePickup = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  throw new Error(`Bridge query ${id} timed out after ${timeoutMs}ms (${removedBeforePickup ? "removed before bridge pickup" : "bridge may have consumed query"})`);
+}
+
+export async function queryVariables(ids: number[]): Promise<Record<string, unknown>> {
+  const data = objectValue(await sendQuery("variables", [...new Set(ids)].slice(0, 64).join(",")));
+  return objectValue(data.variables);
+}
+export async function querySwitches(ids: number[]): Promise<Record<string, unknown>> {
+  const data = objectValue(await sendQuery("switches", [...new Set(ids)].slice(0, 64).join(",")));
+  return objectValue(data.switches);
+}
+export async function queryItems(): Promise<{ items: unknown[] }> {
+  const data = objectValue(await sendQuery("items")); return { items: Array.isArray(data.items) ? data.items : [] };
+}
+export async function queryWeapons(): Promise<{ weapons: unknown[] }> {
+  const data = objectValue(await sendQuery("weapons")); return { weapons: Array.isArray(data.weapons) ? data.weapons : [] };
+}
+export async function queryArmors(): Promise<{ armors: unknown[] }> {
+  const data = objectValue(await sendQuery("armors")); return { armors: Array.isArray(data.armors) ? data.armors : [] };
+}
+export async function queryFullParty(): Promise<Record<string, unknown>> {
+  return objectValue(await sendQuery("full_party"));
+}
+
 export async function sendAction(action: Action, repeat = 1, timeoutMs = 60000) {
   return sendSequence([{ action, repeat }], timeoutMs);
+}
+
+export interface SaveResult {
+  ok: boolean; slot: number; frame_before: number; frame_after: number;
+  scene_after: string | null; message: string;
+}
+export interface LoadResult {
+  ok: boolean; slot: number; scene_before: string | null; scene_after: string | null;
+  player_after: { x: number; y: number; map_id: number } | null; message: string;
+}
+export interface SituationSnapshot {
+  ok: boolean;
+  scene: string | null;
+  location: string | null;
+  player: { x: number; y: number; direction: number } | null;
+  party: Array<{ name: string; hp: number; mhp: number; mp: number; mmp: number; tp: number; level: number; alive: boolean }>;
+  gold: number;
+  message_text: string | null;
+  choices: string[];
+  battle_enemies: Array<{ name: string; hp: number; mhp: number; dead: boolean }>;
+  nearby_events: Array<{ id: number; name: string; x: number; y: number; dx: number; dy: number }>;
+  passable: { up: boolean; down: boolean; left: boolean; right: boolean } | null;
+  suggested_actions: string[];
+  warnings: string[];
+  frame: number;
+  updated_at: number;
+}
+
+export interface HealthIssue { code: string; severity: "critical" | "warning" | "info"; detail: string }
+export interface HealthReport {
+  ok: boolean; game_running: boolean; bridge_connected: boolean; state_age_ms: number | null; map_age_ms: number | null;
+  last_error_log: string | null; inbox_pending: number; outbox_orphaned: number; memory_ok: boolean;
+  issues: HealthIssue[]; recommended_action: string;
+}
+export type WaitCondition =
+  | { type: "scene"; value: string } | { type: "not_scene"; value: string }
+  | { type: "message_clear" } | { type: "battle_end" } | { type: "player_stopped" }
+  | { type: "frame_advance"; frames: number };
+export interface WaitResult { ok: boolean; condition: WaitCondition; elapsed_ms: number; final_scene: string | null; timed_out: boolean }
+
+const objectValue = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
+const sceneName = (state: Record<string, unknown>): string | null => {
+  const value = objectValue(state.scene).name;
+  return typeof value === "string" ? value : null;
+};
+
+export async function triggerSave(slot: number, timeoutMs = 30000): Promise<SaveResult> {
+  const before = await readState();
+  const beforeScene = sceneName(before);
+  if (beforeScene !== "Scene_Map") throw new Error(`Save is only available from Scene_Map (current: ${beforeScene || "unknown"})`);
+  const steps: SequenceStep[] = [{ action: "open_menu" }, { wait_frames: 8 }];
+  if (slot > 0) steps.push({ action: "move_down", repeat: slot });
+  steps.push({ action: "confirm" }, { wait_frames: 6 }, { action: "confirm" });
+  await sendSequence(steps, timeoutMs);
+  const after = await readState();
+  return { ok: true, slot, frame_before: Number(before.frame || 0), frame_after: Number(after.frame || 0), scene_after: sceneName(after), message: "save input sequence completed; verify the save list" };
+}
+
+export async function triggerLoad(slot: number, timeoutMs = 30000): Promise<LoadResult> {
+  const before = await readState();
+  const beforeScene = sceneName(before);
+  const steps: SequenceStep[] = [];
+  if (beforeScene === "Scene_Title") {
+    steps.push({ action: "confirm" }, { wait_frames: 10 });
+  } else if (beforeScene === "Scene_Map") {
+    steps.push({ action: "open_menu" }, { wait_frames: 8 }, { action: "move_down" }, { action: "confirm" }, { wait_frames: 8 });
+  } else {
+    throw new Error(`Load is only available from Scene_Title or Scene_Map (current: ${beforeScene || "unknown"})`);
+  }
+  if (slot > 0) steps.push({ action: "move_down", repeat: slot });
+  steps.push({ action: "confirm" }, { wait_frames: 30 });
+  await sendSequence(steps, timeoutMs);
+  const after = await readState();
+  const player = objectValue(after.player);
+  const map = objectValue(after.map);
+  const playerAfter = Number.isFinite(Number(player.x)) && Number.isFinite(Number(player.y))
+    ? { x: Number(player.x), y: Number(player.y), map_id: Number(map.id || 0) } : null;
+  return { ok: true, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerAfter, message: "load input sequence completed; verify the resulting state" };
+}
+
+export interface DialogueResult { ok: boolean; lines_advanced: number; final_choices: string[]; dialogue_ended: boolean; scene_after: string | null; message: string }
+export async function advanceDialogue(choiceIndex?: number, maxAdvances = 30, timeoutMs = 30000): Promise<DialogueResult> {
+  let state = await readState(); let message = objectValue(state.message);
+  if (!message.busy) return { ok: false, lines_advanced: 0, final_choices: [], dialogue_ended: true, scene_after: sceneName(state), message: "no active dialogue" };
+  const started = Date.now(); let lines = 0;
+  for (; lines < maxAdvances; lines += 1) {
+    const choices = Array.isArray(message.choices) ? message.choices.map(String) : [];
+    if (choices.length) {
+      if (choiceIndex === undefined) return { ok: true, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice required" };
+      if (choiceIndex >= choices.length) return { ok: false, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice index out of range" };
+      const steps: SequenceStep[] = []; if (choiceIndex > 0) steps.push({ action: "move_down", repeat: choiceIndex }); steps.push({ action: "confirm" }, { wait_frames: 8 });
+      await sendSequence(steps, Math.max(500, timeoutMs - (Date.now() - started))); state = await readState(); message = objectValue(state.message); lines += 1; break;
+    }
+    await sendSequence([{ action: "confirm" }, { wait_frames: 8 }], Math.max(500, timeoutMs - (Date.now() - started)));
+    state = await readState(); message = objectValue(state.message); if (!message.busy) { lines += 1; break; }
+    if (Date.now() - started >= timeoutMs) break;
+  }
+  const finalChoices = Array.isArray(message.choices) ? message.choices.map(String) : [];
+  return { ok: true, lines_advanced: lines, final_choices: finalChoices, dialogue_ended: !message.busy, scene_after: sceneName(state), message: !message.busy ? "dialogue ended" : finalChoices.length ? "choice required" : "maximum advances reached" };
+}
+
+export async function buildSituation(): Promise<SituationSnapshot> {
+  const [state, mapResult] = await Promise.all([readState(), readMap().catch(() => ({}))]);
+  const map = objectValue(mapResult);
+  const scene = sceneName(state);
+  const playerRaw = objectValue(state.player);
+  const partyRaw = objectValue(state.party);
+  const messageRaw = objectValue(state.message);
+  const battleRaw = objectValue(state.battle);
+  const mapRaw = objectValue(state.map);
+  const members = Array.isArray(partyRaw.members) ? partyRaw.members.map(objectValue) : [];
+  const party = members.map((member) => ({
+    name: String(member.name || ""), hp: Number(member.hp || 0), mhp: Number(member.mhp || 0),
+    mp: Number(member.mp || 0), mmp: Number(member.mmp || 0), tp: Number(member.tp || 0),
+    level: Number(member.level || 0), alive: Number(member.hp || 0) > 0,
+  }));
+  const enemies = (Array.isArray(battleRaw.enemies) ? battleRaw.enemies : []).map(objectValue).map((enemy) => ({
+    name: String(enemy.name || ""), hp: Number(enemy.hp || 0), mhp: Number(enemy.mhp || 0), dead: Boolean(enemy.dead),
+  }));
+  const px = Number(playerRaw.x || 0); const py = Number(playerRaw.y || 0);
+  const events = (Array.isArray(map.events) ? map.events : []).map(objectValue).map((event) => ({
+    id: Number(event.id || 0), name: String(event.name || ""), x: Number(event.x || 0), y: Number(event.y || 0),
+    dx: Number(event.x || 0) - px, dy: Number(event.y || 0) - py,
+  }));
+  const centerTile = (Array.isArray(map.tiles) ? map.tiles : []).map(objectValue).find((tile) => Number(tile.x) === px && Number(tile.y) === py);
+  const passableRaw = objectValue(centerTile?.passable);
+  const passable = centerTile ? { up: Boolean(passableRaw.up), down: Boolean(passableRaw.down), left: Boolean(passableRaw.left), right: Boolean(passableRaw.right) } : null;
+  const choices = Array.isArray(messageRaw.choices) ? messageRaw.choices.map(String) : [];
+  const busy = Boolean(messageRaw.busy); const battleActive = Boolean(battleRaw.active);
+  const suggested: string[] = [];
+  if (scene === "Scene_Title") suggested.push("confirm (start game)", "move_down + confirm (load game)");
+  else if (busy && choices.length) suggested.push("confirm (select choice)", "cancel (back)");
+  else if (busy) suggested.push("confirm (advance text)");
+  else if (battleActive) suggested.push("confirm (fight)", "cancel (flee/menu)");
+  else if (scene === "Scene_Map") {
+    if (passable?.up) suggested.push("move_up"); if (passable?.down) suggested.push("move_down");
+    if (passable?.left) suggested.push("move_left"); if (passable?.right) suggested.push("move_right");
+    suggested.push("open_menu");
+  }
+  if (!suggested.length) suggested.push("read state and wait");
+  const warnings: string[] = [];
+  for (const member of party) { if (member.hp === 0) warnings.push(`DEAD: ${member.name}`); else if (member.mhp > 0 && member.hp < member.mhp * 0.25) warnings.push(`HP critical: ${member.name}`); }
+  if (battleActive) warnings.push("in battle"); if (busy) warnings.push("dialogue active");
+  return {
+    ok: true, scene, location: battleActive ? "Battle" : scene === "Scene_Map" ? String(mapRaw.display_name || "") || null : scene?.replace(/^Scene_/, "") || null,
+    player: Object.keys(playerRaw).length ? { x: px, y: py, direction: Number(playerRaw.direction || 0) } : null,
+    party, gold: Number(partyRaw.gold || 0), message_text: typeof messageRaw.text === "string" && messageRaw.text ? messageRaw.text : null,
+    choices, battle_enemies: enemies, nearby_events: events, passable, suggested_actions: suggested, warnings,
+    frame: Number(state.frame || 0), updated_at: Number(state.updated_at || 0),
+  };
+}
+
+async function snapshotAge(directory: string, prefix: string): Promise<number | null> {
+  const files = await existingDirectoryFiles(directory, prefix); const candidate = files[0];
+  if (!candidate) return null;
+  try {
+    const json = await readJsonWithRetry<Record<string, unknown>>(candidate, 1);
+    const timestamp = Number(json.updated_at || 0) * 1000;
+    if (Number.isFinite(timestamp) && timestamp > 0) return Math.max(0, Math.round(Date.now() - timestamp));
+    return Math.max(0, Math.round(Date.now() - (await fs.stat(candidate)).mtimeMs));
+  } catch { return null; }
+}
+
+async function directoryFileAges(directory: string, suffix: string): Promise<Array<{ name: string; age: number }>> {
+  try {
+    const names = (await fs.readdir(directory)).filter((name) => name.endsWith(suffix));
+    return (await Promise.all(names.map(async (name) => { try { return { name, age: Date.now() - (await fs.stat(path.join(directory, name))).mtimeMs }; } catch { return null; } })))
+      .filter((entry): entry is { name: string; age: number } => entry !== null);
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+}
+
+export async function bridgeHealth(): Promise<HealthReport> {
+  const status = await bridgeStatus(); const stateAge = await snapshotAge(stateDir(), "state"); const mapAge = await snapshotAge(mapDir(), "map");
+  const inbox = await directoryFileAges(inboxDir(), ".cmd"); const outbox = await directoryFileAges(outboxDir(), ".json");
+  let lastError: string | null = null; let errorRecent = false;
+  try { const errorFile = path.join(runtimeDir(), "error.log"); const stat = await fs.stat(errorFile); errorRecent = Date.now() - stat.mtimeMs < 60000; const lines = (await fs.readFile(errorFile, "utf8")).trim().split(/\r?\n/); lastError = lines.at(-1) || null; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  let memoryOk = true; const memoryDir = path.join(installRoot(), "memory"); const probe = path.join(memoryDir, `.health-${process.pid}-${randomUUID()}.tmp`);
+  try { await fs.mkdir(memoryDir, { recursive: true }); await fs.writeFile(probe, "ok", "ascii"); await fs.unlink(probe); } catch { memoryOk = false; await fs.unlink(probe).catch(() => undefined); }
+  const issues: HealthIssue[] = []; const gameRunning = status.process_alive === true; const connected = status.connected === true;
+  if (!connected && !Number(status.pid || 0)) issues.push({ code: "game_not_running", severity: "critical", detail: "No live game process or bridge info snapshot was found" });
+  if (gameRunning && stateAge !== null && stateAge > 5000) issues.push({ code: "stale_state", severity: "warning", detail: `State snapshot is ${stateAge}ms old` });
+  let state: Record<string, unknown> | null = null; try { state = await readStateSnapshot(String(status.launch_token || "") || undefined); } catch { /* unavailable */ }
+  if (gameRunning && stateAge !== null && stateAge > 3000 && objectValue(state?.scene).name == null) issues.push({ code: "scene_transition", severity: "info", detail: "Scene name remains unavailable during transition" });
+  const stuck = inbox.filter((entry) => entry.age > 10000); if (stuck.length) issues.push({ code: "stuck_command", severity: "critical", detail: `${stuck.length} command file(s) have waited more than 10 seconds` });
+  const orphaned = outbox.filter((entry) => entry.age > 60000); if (orphaned.length) issues.push({ code: "orphaned_response", severity: "warning", detail: `${orphaned.length} response file(s) are older than 60 seconds` });
+  if (errorRecent) issues.push({ code: "error_log_recent", severity: "warning", detail: lastError || "Bridge error log changed recently" });
+  if (!memoryOk) issues.push({ code: "memory_unwritable", severity: "critical", detail: "Persistent memory directory did not pass a write probe" });
+  let recommended = "All systems nominal; proceed with gameplay";
+  if (issues.some((issue) => issue.code === "stuck_command")) recommended = "Call black_souls_kill then black_souls_launch to reset the bridge";
+  else if (issues.some((issue) => issue.code === "game_not_running")) recommended = "Call black_souls_launch to start the game";
+  else if (issues.some((issue) => issue.code === "stale_state")) recommended = "Wait 2 seconds and retry; bridge may be recovering from scene transition";
+  else if (issues.some((issue) => issue.severity === "critical")) recommended = "Resolve the critical health issue before continuing";
+  return { ok: !issues.some((issue) => issue.severity === "critical"), game_running: gameRunning, bridge_connected: connected, state_age_ms: stateAge, map_age_ms: mapAge, last_error_log: lastError, inbox_pending: inbox.length, outbox_orphaned: orphaned.length, memory_ok: memoryOk, issues, recommended_action: recommended };
+}
+
+function conditionMet(condition: WaitCondition, initialFrame: number, state: Record<string, unknown>): boolean {
+  const scene = sceneName(state); const message = objectValue(state.message); const battle = objectValue(state.battle); const player = objectValue(state.player);
+  if (condition.type === "scene") return scene === condition.value;
+  if (condition.type === "not_scene") return scene !== condition.value;
+  if (condition.type === "message_clear") return message.busy === false;
+  if (condition.type === "battle_end") return battle.active === false;
+  if (condition.type === "player_stopped") return player.moving === false;
+  return Number(state.frame || 0) >= initialFrame + condition.frames;
+}
+export async function waitForCondition(condition: WaitCondition, timeoutMs = 15000, pollIntervalMs = 200): Promise<WaitResult> {
+  const started = Date.now(); let state = await readState(); const initialFrame = Number(state.frame || 0);
+  while (true) {
+    if (conditionMet(condition, initialFrame, state)) return { ok: true, condition, elapsed_ms: Date.now() - started, final_scene: sceneName(state), timed_out: false };
+    if (Date.now() - started >= timeoutMs) return { ok: false, condition, elapsed_ms: Date.now() - started, final_scene: sceneName(state), timed_out: true };
+    await sleep(Math.min(pollIntervalMs, Math.max(1, timeoutMs - (Date.now() - started)))); state = await readState();
+  }
+}
+
+export interface EvalCondition {
+  type: "scene" | "map_id" | "variable" | "switch" | "player_x" | "player_y" | "all_party_dead";
+  value?: string | number | boolean;
+  variable_id?: number;
+  switch_id?: number;
+}
+export interface EvalConditionResult { condition: EvalCondition; actual: unknown; passed: boolean }
+export interface EvalStatus { ok: boolean; all_passed: boolean; results: EvalConditionResult[]; frame: number; scene: string | null }
+
+export async function evalStatus(conditions: EvalCondition[]): Promise<EvalStatus> {
+  const state = await readState();
+  const scene = sceneName(state);
+  const player = objectValue(state.player);
+  const map = objectValue(state.map);
+  const members = (Array.isArray(objectValue(state.party).members) ? objectValue(state.party).members as unknown[] : []).map(objectValue);
+  const variableIds = [...new Set(conditions.filter((item) => item.type === "variable").map((item) => Number(item.variable_id || 0)).filter((id) => id > 0))];
+  const switchIds = [...new Set(conditions.filter((item) => item.type === "switch").map((item) => Number(item.switch_id || 0)).filter((id) => id > 0))];
+  const variables = variableIds.length ? await queryVariables(variableIds) : {};
+  const switches = switchIds.length ? await querySwitches(switchIds) : {};
+  const results = conditions.map((condition) => {
+    let actual: unknown = null;
+    if (condition.type === "scene") actual = scene;
+    else if (condition.type === "map_id") actual = Number(map.id || 0);
+    else if (condition.type === "variable") actual = variables[String(condition.variable_id || 0)] ?? null;
+    else if (condition.type === "switch") actual = Boolean(switches[String(condition.switch_id || 0)]);
+    else if (condition.type === "player_x") actual = Number(player.x || 0);
+    else if (condition.type === "player_y") actual = Number(player.y || 0);
+    else actual = members.length > 0 && members.every((member) => Number(member.hp || 0) <= 0);
+    const expected = condition.value ?? (condition.type === "all_party_dead" || condition.type === "switch" ? true : condition.value);
+    const passed = actual === expected || String(actual) === String(expected);
+    return { condition, actual, passed };
+  });
+  return { ok: true, all_passed: results.every((entry) => entry.passed), results, frame: Number(state.frame || 0), scene };
 }
 
 export async function prepareBridgeRuntime(launchToken: string): Promise<{ archived_runtime: string | null; runtime_directory: string }> {

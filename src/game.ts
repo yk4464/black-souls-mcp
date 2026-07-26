@@ -1,11 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
-import { bridgeStatus, prepareBridgeRuntime } from "./bridge.js";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+import { bridgeRuntimeDirectory, bridgeStatus, prepareBridgeRuntime } from "./bridge.js";
 import { gameDir, gameExe } from "./config.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const execFileAsync = promisify(execFile);
 export const KNOWN_GAME_EXE_SHA256 = "E4447454C551B96C833E7ED4C7114F807C86FE32F0757C206BEDDA94AC85BC2B";
 export const EXPECTED_GAME_EXE_SHA256 = (
   process.env.BLACK_SOULS_GAME_EXE_SHA256 ?? KNOWN_GAME_EXE_SHA256
@@ -113,4 +115,57 @@ export async function launchGame(waitMs = 12000): Promise<Record<string, unknown
     await stopLaunchedProcess(child);
     throw error;
   }
+}
+
+export interface KillResult {
+  ok: boolean;
+  pid: number | null;
+  signal: string;
+  message: string;
+}
+
+async function latestInfoPid(): Promise<number | null> {
+  const directory = path.join(bridgeRuntimeDirectory(), "info");
+  try {
+    const names = (await fs.readdir(directory)).filter((name) => /^info-.*\.json$/i.test(name));
+    const candidates = await Promise.all(names.map(async (name) => {
+      const file = path.join(directory, name);
+      try { return { file, mtime: (await fs.stat(file)).mtimeMs }; } catch { return null; }
+    }));
+    for (const entry of candidates.filter((value): value is { file: string; mtime: number } => value !== null)
+      .sort((a, b) => b.mtime - a.mtime)) {
+      try {
+        const pid = Number(JSON.parse(await fs.readFile(entry.file, "utf8")).pid);
+        if (Number.isInteger(pid) && pid > 0) return pid;
+      } catch { /* try the next snapshot */ }
+    }
+    try {
+      const pid = Number(JSON.parse(await fs.readFile(path.join(bridgeRuntimeDirectory(), "info.json"), "utf8")).pid);
+      return Number.isInteger(pid) && pid > 0 ? pid : null;
+    } catch { return null; }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+export async function killGame(): Promise<KillResult> {
+  const pid = await latestInfoPid();
+  if (pid === null || !isAlive(pid)) return { ok: true, pid: pid && isAlive(pid) ? pid : null, signal: "none", message: "not running" };
+  if (process.platform === "win32") {
+    try { await execFileAsync("taskkill.exe", ["/F", "/PID", String(pid)], { windowsHide: true, timeout: 5000 }); }
+    catch (error) { if (isAlive(pid)) throw error; }
+    return { ok: !isAlive(pid), pid, signal: "taskkill /F", message: isAlive(pid) ? "process still running" : "terminated" };
+  }
+  try { process.kill(pid, "SIGTERM"); } catch (error) { if (isAlive(pid)) throw error; }
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && isAlive(pid)) await sleep(50);
+  let signal = "SIGTERM";
+  if (isAlive(pid)) { process.kill(pid, "SIGKILL"); signal = "SIGKILL"; }
+  return { ok: !isAlive(pid), pid, signal, message: isAlive(pid) ? "process still running" : "terminated" };
 }

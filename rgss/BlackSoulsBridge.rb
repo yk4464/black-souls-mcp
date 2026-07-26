@@ -65,7 +65,7 @@ module Input
 end
 
 module BlackSoulsBridge
-  VERSION = "1.1.1"
+  VERSION = "1.8.0"
   PROTOCOL = "black-souls-bridge/1"
   ROOT = "BridgeRuntime"
   INBOX = ROOT + "/inbox"
@@ -123,7 +123,7 @@ module BlackSoulsBridge
       "pid" => process_id,
       "launch_token" => @launch_token,
       "started_at" => Time.now.to_f,
-      "capabilities" => ["state", "map", "input", "input_sequence"]
+      "capabilities" => ["state", "map", "input", "input_sequence", "query", "query_v2"]
     })
     @initialized = true
   end
@@ -272,6 +272,20 @@ module BlackSoulsBridge
     raise "invalid command id" unless id =~ /\A[a-zA-Z0-9_-]{1,80}\z/
     raise "command launch token mismatch" unless values["token"].to_s == @launch_token.to_s
     raise "duplicate command" if @seen[id]
+    type = values["type"].to_s
+    type = "sequence" if type.empty?
+    if type == "query"
+      query_name = values["query"].to_s
+      raise "invalid query name" unless query_name =~ /\A[a-z_]{1,64}\z/
+      @seen[id] = true
+      @seen_order << id
+      if @seen_order.length > 1024
+        expired = @seen_order.shift
+        @seen.delete(expired)
+      end
+      return { "id" => id, "type" => "query", "query" => query_name, "params" => values["params"].to_s }
+    end
+    raise "invalid command type" unless type == "sequence"
     encoded_steps = values["steps"].to_s.split(";")
     raise "invalid sequence length" if encoded_steps.empty? || encoded_steps.length > MAX_SEQUENCE_STEPS
     steps = []
@@ -338,6 +352,23 @@ module BlackSoulsBridge
   def self.process_command
     @active ||= @queue.shift
     return unless @active
+    if @active["type"] == "query"
+      result = execute_query(@active["query"], @active["params"])
+      failed = result.is_a?(Hash) && result["error"]
+      response = {
+        "ok" => !failed, "id" => @active["id"], "type" => "query",
+        "protocol" => PROTOCOL, "bridge_version" => VERSION, "pid" => process_id,
+        "launch_token" => @launch_token, "frame" => Graphics.frame_count
+      }
+      if failed
+        response["error"] = result["error"]
+      else
+        response["data"] = result
+      end
+      atomic_json(OUTBOX + "/" + @active["id"] + ".json", response)
+      @active = nil
+      return
+    end
     if @active["wait"] > 0
       @active["wait"] -= 1
       return
@@ -369,8 +400,158 @@ module BlackSoulsBridge
     @active = nil
   end
 
-  def self.safe_call(object, method, fallback = nil)
-    object && object.respond_to?(method) ? object.send(method) : fallback
+  def self.execute_query(name, params)
+    case name
+    when "variables" then query_variables(params)
+    when "switches" then query_switches(params)
+    when "items" then query_items
+    when "weapons" then query_weapons
+    when "armors" then query_armors
+    when "full_party" then query_full_party
+    when "full_map" then query_full_map(params)
+    when "event_detail" then query_event_detail(params)
+    when "scene_detail" then query_scene_detail
+    else raise "unknown query: #{name}"
+    end
+  rescue => error
+    append_error(error)
+    { "error" => error.message }
+  end
+
+  def self.query_variables(params)
+    ids = params.split(",").map { |value| value.to_i }.uniq.first(64)
+    return { "variables" => {} } unless defined?($game_variables) && $game_variables
+    result = {}
+    ids.each { |id| result[id.to_s] = safe_call($game_variables, :[], nil, id) if id > 0 }
+    { "variables" => result }
+  rescue => error
+    append_error(error); { "variables" => {}, "error" => error.message }
+  end
+
+  def self.query_switches(params)
+    ids = params.split(",").map { |value| value.to_i }.uniq.first(64)
+    return { "switches" => {} } unless defined?($game_switches) && $game_switches
+    result = {}
+    ids.each { |id| result[id.to_s] = !!safe_call($game_switches, :[], false, id) if id > 0 }
+    { "switches" => result }
+  rescue => error
+    append_error(error); { "switches" => {}, "error" => error.message }
+  end
+
+  def self.query_items
+    return { "items" => [] } unless defined?($game_party) && $game_party
+    items = safe_call($game_party, :items, [])
+    { "items" => items.map { |item| { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, ""), "count" => safe_call($game_party, :item_number, 0, item), "note" => (safe_call(item, :note, "").to_s.lines.first.to_s.strip rescue "") } } }
+  rescue => error
+    append_error(error); { "items" => [], "error" => error.message }
+  end
+
+  def self.query_weapons
+    return { "weapons" => [] } unless defined?($game_party) && $game_party
+    weapons = safe_call($game_party, :weapons, [])
+    { "weapons" => weapons.map { |item| { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, ""), "count" => safe_call($game_party, :item_number, 0, item), "atk" => safe_call(item, :atk, 0), "note" => (safe_call(item, :note, "").to_s.lines.first.to_s.strip rescue "") } } }
+  rescue => error
+    append_error(error); { "weapons" => [], "error" => error.message }
+  end
+
+  def self.query_armors
+    return { "armors" => [] } unless defined?($game_party) && $game_party
+    armors = safe_call($game_party, :armors, [])
+    { "armors" => armors.map { |item| { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, ""), "count" => safe_call($game_party, :item_number, 0, item), "def" => safe_call(item, :def, 0), "note" => (safe_call(item, :note, "").to_s.lines.first.to_s.strip rescue "") } } }
+  rescue => error
+    append_error(error); { "armors" => [], "error" => error.message }
+  end
+
+  def self.query_full_party
+    return { "members" => [] } unless defined?($game_party) && $game_party
+    { "members" => $game_party.members.map { |actor|
+      equips = safe_call(actor, :equips, []).map { |item| item ? { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, "") } : nil }
+      skills = safe_call(actor, :skills, []).map { |skill| { "id" => safe_call(skill, :id, 0), "name" => safe_call(skill, :name, ""), "mp_cost" => safe_call(skill, :mp_cost, 0) } }
+      actor_summary(actor).merge({ "atk" => safe_call(actor, :atk, 0), "def" => safe_call(actor, :def, 0), "mat" => safe_call(actor, :mat, 0), "mdf" => safe_call(actor, :mdf, 0), "agi" => safe_call(actor, :agi, 0), "luk" => safe_call(actor, :luk, 0), "equips" => equips, "skills" => skills })
+    } }
+  rescue => error
+    append_error(error); { "members" => [], "error" => error.message }
+  end
+
+  def self.query_full_map(params)
+    return { "available" => false } unless map_ready? && defined?($game_player) && $game_player
+    match = /radius=(\d+)/.match(params.to_s)
+    radius = [match ? match[1].to_i : 0, 6].max
+    radius = [radius, 20].min
+    px = safe_call($game_player, :x, 0); py = safe_call($game_player, :y, 0)
+    width = safe_call($game_map, :width, 0); height = safe_call($game_map, :height, 0)
+    tiles = []
+    (py - radius).upto(py + radius) do |y|
+      (px - radius).upto(px + radius) do |x|
+        next unless x >= 0 && y >= 0 && x < width && y < height
+        tiles << { "x" => x, "y" => y, "passable" => {
+          "down" => safe_call($game_map, :passable?, false, x, y, 2), "left" => safe_call($game_map, :passable?, false, x, y, 4),
+          "right" => safe_call($game_map, :passable?, false, x, y, 6), "up" => safe_call($game_map, :passable?, false, x, y, 8)
+        }, "region" => safe_call($game_map, :region_id, 0, x, y), "terrain_tag" => safe_call($game_map, :terrain_tag, 0, x, y) }
+      end
+    end
+    events_hash = safe_call($game_map, :events, {})
+    events = events_hash.respond_to?(:values) ? events_hash.values.map { |event| event_summary(event) }.compact : []
+    { "available" => true, "map_id" => safe_call($game_map, :map_id, 0), "width" => width, "height" => height,
+      "display_name" => safe_call($game_map, :display_name, ""), "center" => { "x" => px, "y" => py }, "radius" => radius, "tiles" => tiles, "events" => events }
+  rescue => error
+    append_error(error); { "available" => false, "error" => error.message }
+  end
+
+  def self.query_event_detail(params)
+    event_id = params.to_i
+    return { "found" => false } unless defined?($game_map) && $game_map
+    events = safe_call($game_map, :events, {})
+    event = events[event_id] rescue nil
+    return { "found" => false } unless event
+    data = safe_call(event, :event, nil); pages = []
+    data_pages = data ? safe_call(data, :pages, []) : []
+    active_page = safe_instance_variable(event, :@page, nil)
+    data_pages.each_with_index do |page, index|
+      condition = safe_call(page, :condition, nil)
+      pages << { "page" => index + 1, "active" => active_page == page, "condition" => {
+        "switch1_valid" => safe_call(condition, :switch1_valid, false), "switch1_id" => safe_call(condition, :switch1_id, 0),
+        "switch2_valid" => safe_call(condition, :switch2_valid, false), "switch2_id" => safe_call(condition, :switch2_id, 0),
+        "variable_valid" => safe_call(condition, :variable_valid, false), "variable_id" => safe_call(condition, :variable_id, 0),
+        "variable_value" => safe_call(condition, :variable_value, 0), "self_switch_valid" => safe_call(condition, :self_switch_valid, false),
+        "self_switch_ch" => safe_call(condition, :self_switch_ch, "")
+      }, "trigger" => safe_call(page, :trigger, nil), "priority_type" => safe_call(page, :priority_type, nil),
+        "move_type" => safe_call(page, :move_type, nil), "command_count" => safe_call(page, :list, []).length }
+    end
+    self_switches = {}
+    ["A", "B", "C", "D"].each do |channel|
+      key = [safe_call($game_map, :map_id, 0), event_id, channel]
+      self_switches[channel] = defined?($game_self_switches) && $game_self_switches ? !!safe_call($game_self_switches, :[], false, key) : false
+    end
+    { "found" => true, "id" => event_id, "name" => data ? safe_call(data, :name, "") : "", "x" => safe_call(event, :x, 0),
+      "y" => safe_call(event, :y, 0), "direction" => safe_call(event, :direction, 0), "pages" => pages, "self_switches" => self_switches }
+  rescue => error
+    append_error(error); { "found" => false, "error" => error.message }
+  end
+
+  def self.query_scene_detail
+    scene = defined?(SceneManager) ? SceneManager.scene : nil
+    return { "scene" => nil } unless scene
+    base = { "scene" => scene.class.to_s }
+    case scene.class.to_s
+    when "Scene_Map"
+      interpreter = defined?($game_map) && $game_map ? safe_call($game_map, :interpreter, nil) : nil
+      common_events = defined?($game_map) && $game_map ? safe_call($game_map, :common_events, []) : []
+      base.merge({ "interpreter_running" => safe_call(interpreter, :running?, false), "common_events_count" => common_events.count { |event| safe_call(event, :active?, false) } })
+    when "Scene_Battle"
+      window = safe_instance_variable(scene, :@actor_command_window, nil)
+      actor = defined?(BattleManager) ? safe_call(BattleManager, :actor, nil) : nil
+      base.merge({ "actor_command_window_active" => !!safe_call(window, :active, false), "current_actor_index" => actor ? safe_call(actor, :index, nil) : nil,
+        "phase" => (defined?(BattleManager) ? safe_instance_variable(BattleManager, :@phase, nil) : nil) })
+    else
+      base
+    end
+  rescue => error
+    append_error(error); { "scene" => nil, "error" => error.message }
+  end
+
+  def self.safe_call(object, method, fallback = nil, *args)
+    object && object.respond_to?(method) ? object.send(method, *args) : fallback
   rescue
     fallback
   end
