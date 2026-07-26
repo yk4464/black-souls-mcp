@@ -15,7 +15,7 @@ process.env.BLACK_SOULS_DIR = game;
 const { BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, sendQuery, sendSequence, triggerSave, waitForCondition } = await import("../dist/bridge.js");
 const { killGame, launchGame } = await import("../dist/game.js");
 const { appendSessionLog, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } = await import("../dist/memory.js");
-const { findPath, navigate } = await import("../dist/navigation.js");
+const { findPath, navigate, interact } = await import("../dist/navigation.js");
 const { battleAction } = await import("../dist/battle.js");
 const token = "0123456789abcdef0123456789abcdef";
 const now = () => Date.now() / 1000;
@@ -96,6 +96,32 @@ try {
   await fs.unlink(situationState); await fs.unlink(situationMap);
   assert.equal((await advanceDialogue()).ok, false);
   assert.equal((await battleAction("attack")).ok, false);
+
+  // A skill the actor cannot pay for must be refused before any key is sent. Letting it
+  // through makes the game buzz, commit nothing, and the call report a phantom success.
+  const battleState = await writeJson(path.join(runtime, "state"), "state-battle.json", {
+    ...base, frame: 130, updated_at: now(), scene: {
+      name: "Scene_Battle",
+      windows: [{ class: "Window_ActorCommand", active: true, index: 0, item_max: 4, col_max: 1, current_symbol: "attack" }],
+    },
+    player: { x: 1, y: 1 }, message: { busy: false, choices: [] },
+    party: { gold: 0, members: [{ name: "Hero", hp: 100, mhp: 100, mp: 3, mmp: 60, tp: 0 }] },
+    battle: { active: true, turn: 4, enemies: [{ name: "Slime", hp: 50, mhp: 50, dead: false }] },
+  });
+  const optionsPayload = {
+    ok: true, data: {
+      available: true, actor: { name: "Hero", hp: 100, mhp: 100, mp: 3, mmp: 60, tp: 0 },
+      commands: [], items: [], enemy_targets: [{ target_index: 0, battler_index: 0, name: "Slime" }],
+      skill_groups: [{ action: "skill", label: "Skills", skills: [{ index: 0, name: "Fireball", mp_cost: 20, tp_cost: 0, usable_now: false }] }],
+    },
+  };
+  const refusal = battleAction("skill", 0, 0, 0, 8000);
+  await answerNextQuery(optionsPayload);
+  await assert.rejects(refusal, /Fireball.*cannot be used right now/s, "an unaffordable skill must be refused, not silently swallowed");
+  const missing = battleAction("skill", 7, 0, 0, 8000);
+  await answerNextQuery(optionsPayload);
+  await assert.rejects(missing, /skill_index 7 does not exist/, "an out-of-range skill index must name the real list");
+  await fs.unlink(battleState);
   const evalState = await writeJson(path.join(runtime, "state"), "state-eval.json", {
     ...base, frame: 122, updated_at: now(), scene: { name: "Scene_Map" },
     player: { x: 5, y: 9 }, map: { id: 104 },
@@ -229,9 +255,28 @@ try {
   assert.deepEqual(await killGame(), { ok: true, pid: null, signal: "none", message: "not running" });
   await assert.rejects(() => triggerSave(2), /bridge is not ready/i);
   await assert.rejects(() => navigate(1, 1), /bridge is not ready/i);
+  const menuState = await writeJson(path.join(runtime, "state"), "state-menu.json", {
+    ...base, launch_token: nextToken, frame: 400, updated_at: now(), scene: { name: "Scene_Menu" }, player: { x: 5, y: 5 },
+  });
+  const menuMap = await writeJson(path.join(runtime, "map"), "map-menu.json", {
+    ...base, launch_token: nextToken, frame: 400, updated_at: now(), available: true, map_id: 21, radius: 6, tiles: [], events: [{ id: 5, x: 5, y: 4 }],
+  });
+  await writeJson(path.join(runtime, "info"), "info-menu.json", { ...base, launch_token: nextToken, capabilities: [] });
+  await assert.rejects(() => navigate(5, 6), /needs the player on the map/i, "movement keys must never be sent from a menu");
+  await assert.rejects(() => interact(5), /needs the player on the map/i, "interact must never be sent from a menu");
+  await Promise.all([fs.unlink(menuState), fs.unlink(menuMap)]);
+  // Unreadable snapshots are not evidence the game died: while the recorded PID is alive the
+  // report must stay a warning and must never tell the caller to relaunch or kill.
+  const unreadableHealth = await bridgeHealth();
+  assert.equal(unreadableHealth.game_running, true, "a live PID must not be reported as a dead game");
+  assert.ok(unreadableHealth.issues.some((issue) => issue.code === "bridge_unreadable" && issue.severity === "warning"));
+  assert.doesNotMatch(unreadableHealth.recommended_action, /black_souls_launch|black_souls_kill/);
+  const deadPid = 0x7ffffffe;
+  await writeJson(path.join(runtime, "info"), "info-dead.json", { ...base, pid: deadPid, launch_token: nextToken, capabilities: [] });
   const stoppedHealth = await bridgeHealth();
   assert.equal(stoppedHealth.game_running, false); assert.ok(stoppedHealth.issues.some((issue) => issue.code === "game_not_running" && issue.severity === "critical"));
   assert.match(stoppedHealth.recommended_action, /black_souls_launch/);
+  await fs.unlink(path.join(runtime, "info", "info-dead.json"));
   await writeJson(path.join(runtime, "info"), "info-health.json", { ...base, bridge_version: "1.7.0", launch_token: nextToken, capabilities: [] });
   await writeJson(path.join(runtime, "state"), "state-health.json", { ...base, bridge_version: "1.7.0", launch_token: nextToken, frame: 10, updated_at: now(), scene: { name: "Scene_Map" }, message: { busy: false }, battle: { active: false }, player: { x: 1, y: 1, moving: false } });
   const stuckFile = path.join(runtime, "inbox", "stuck.cmd"); await fs.writeFile(stuckFile, "synthetic", "ascii");

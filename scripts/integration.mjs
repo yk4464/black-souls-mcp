@@ -29,7 +29,7 @@ try {
     "black_souls_advance_dialogue",
     "black_souls_get_full_map", "black_souls_get_event", "black_souls_get_scene_detail",
     "black_souls_health", "black_souls_wait", "black_souls_session_log_append", "black_souls_session_log_read",
-    "black_souls_eval_status",
+    "black_souls_eval_status", "black_souls_battle_options",
   ];
   for (const name of expected) if (!names.includes(name)) throw new Error(`Missing tool: ${name}`);
   const savesResult = await client.callTool({ name: "black_souls_list_saves", arguments: {} });

@@ -73,6 +73,7 @@ try {
   assert.deepEqual(toolNames, [
     "black_souls_advance_dialogue",
     "black_souls_battle_action",
+    "black_souls_battle_options",
     "black_souls_eval_status",
     "black_souls_get_event",
     "black_souls_get_full_map",
