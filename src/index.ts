@@ -8,7 +8,7 @@ import { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, 
 import { interact, navigate } from "./navigation.js";
 import { battleAction } from "./battle.js";
 
-const SERVER_VERSION = "1.9.0";
+const SERVER_VERSION = "1.9.1";
 const server = new McpServer({ name: "black-souls-mcp", version: SERVER_VERSION });
 const outputSchema = { data: z.unknown() };
 const result = (value: unknown) => ({
@@ -38,11 +38,11 @@ server.registerTool("black_souls_status", {
 }, async () => execute(async () => ({ server_version: SERVER_VERSION, game: await getGameInfo(), bridge: await bridgeStatus() })));
 
 server.registerTool("black_souls_launch", {
-  description: "Launch the independent BLACK SOULS MCP edition and wait for its in-game bridge.",
-  inputSchema: { wait_ms: z.number().int().min(1000).max(30000).optional() },
+  description: "Launch the independent BLACK SOULS MCP edition and wait for its in-game bridge. The window is minimized after launch by default so real keyboard input cannot leak into the game; inputs keep working through the background wake path.",
+  inputSchema: { wait_ms: z.number().int().min(1000).max(30000).optional(), minimize_window: z.boolean().optional() },
   outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-}, async ({ wait_ms }) => execute(() => launchGame(wait_ms)));
+}, async ({ wait_ms, minimize_window }) => execute(() => launchGame(wait_ms, minimize_window)));
 
 server.registerTool("black_souls_get_state", {
   description: "Read current scene, player, party, message, windows, and battle state directly from RGSS3.", inputSchema: {},

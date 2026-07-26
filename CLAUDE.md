@@ -67,7 +67,7 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 | 常量 | TS 侧 | Ruby 侧 |
 |---|---|---|
 | 协议标识 `black-souls-bridge/1` | `BRIDGE_PROTOCOL` (bridge.ts) | `PROTOCOL` |
-| 版本号（当前 `1.9.0`） | `SERVER_VERSION` (index.ts) + `package.json` | `VERSION` |
+| 版本号（当前 `1.9.1`） | `SERVER_VERSION` (index.ts) + `package.json` | `VERSION` |
 | 动作白名单（10 个） | `ACTIONS` (bridge.ts) | `ALLOWED_ACTIONS` |
 | 队列上限 128 | `MAX_PENDING_COMMANDS` | `MAX_QUEUE` |
 | 序列步数上限 200 / 帧预算 3600 | `encodeSteps` | `MAX_SEQUENCE_STEPS` / `MAX_SEQUENCE_FRAMES` |

@@ -72,7 +72,38 @@ export async function listSaves(): Promise<Array<Record<string, unknown>>> {
   }));
 }
 
-export async function launchGame(waitMs = 12000): Promise<Record<string, unknown>> {
+// Minimizing right after launch keeps the operator's real keyboard away from the game
+// window (a focused RPG Maker window eats every keystroke typed on the machine). The
+// bridge's background wake keeps inputs working while minimized.
+const MINIMIZE_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$process = Get-Process -Id ([int]$env:BLACK_SOULS_MINIMIZE_PID) -ErrorAction Stop
+for ($i = 0; $i -lt 40 -and $process.MainWindowHandle -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 250; $process.Refresh() }
+if ($process.MainWindowHandle -eq [IntPtr]::Zero) { exit 4 }
+Add-Type '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindowAsync(System.IntPtr hWnd, int nCmdShow);' -Name Win -Namespace BlackSouls
+if (-not [BlackSouls.Win]::ShowWindowAsync($process.MainWindowHandle, 6)) { exit 5 }
+`;
+const MINIMIZE_SCRIPT_BASE64 = Buffer.from(MINIMIZE_SCRIPT, "utf16le").toString("base64");
+
+async function minimizeGameWindow(pid: number): Promise<boolean> {
+  if (process.platform !== "win32") return false;
+  const systemRoot = process.env.SystemRoot || String.raw`C:\Windows`;
+  const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  try {
+    await execFileAsync(powershell, [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-EncodedCommand", MINIMIZE_SCRIPT_BASE64,
+    ], {
+      windowsHide: true,
+      timeout: 15000,
+      maxBuffer: 128 * 1024,
+      env: { ...process.env, BLACK_SOULS_MINIMIZE_PID: String(pid) },
+    });
+    return true;
+  } catch { return false; }
+}
+
+export async function launchGame(waitMs = 12000, minimizeWindow = true): Promise<Record<string, unknown>> {
   await fs.access(gameExe());
   const executableHash = await sha256(gameExe());
   if (EXPECTED_GAME_EXE_SHA256 && executableHash !== EXPECTED_GAME_EXE_SHA256) {
@@ -105,7 +136,8 @@ export async function launchGame(waitMs = 12000): Promise<Record<string, unknown
         && String(status.launch_token || "") === launchToken
       ) {
         child.unref();
-        return { launched: true, pid: child.pid, launch_token: launchToken, runtime, bridge: status };
+        const windowMinimized = minimizeWindow && child.pid ? await minimizeGameWindow(child.pid) : false;
+        return { launched: true, pid: child.pid, launch_token: launchToken, window_minimized: windowMinimized, runtime, bridge: status };
       }
       await sleep(100);
     }
