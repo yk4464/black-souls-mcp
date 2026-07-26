@@ -1,189 +1,216 @@
-# BLACK SOULS MCP
+# black-souls-mcp
 
-[简体中文](README.md) · [English](README.en.md)
+An MCP server that lets AI agents control and observe BLACK SOULS in real time.
 
-[![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml)
-[![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+Seven [Model Context Protocol](https://modelcontextprotocol.io/) tools give AI assistants (such as OpenAI Codex) the ability to launch the game, read scene and map state, inject keyboard input, and list save slots. Communication runs over a local file protocol — no network configuration or driver-level modifications required.
 
-A local Model Context Protocol bridge for **BLACK SOULS / RPG Maker VX Ace (RGSS3)**. It reads in-engine state and sends allowlisted keyboard actions through the game's normal input loop. It does not require screenshots, mouse emulation, or a network service.
+---
 
-> [!IMPORTANT]
-> This repository contains bridge and MCP source code only. It does not contain, download, or redistribute the game, saves, assets, keys, or extracted commercial game data. Users must provide their own lawfully obtained game files.
+## How it works
 
-## Status
-
-- Platform: Windows 10/11
-- Transport: local `stdio`
-- Engine: RPG Maker VX Ace / RGSS3
-- Distribution: source installation; no npm package is currently published
-- Game versions: one development-tested `Game.exe` fingerprint is built in; other versions can use a user-supplied fingerprint
-
-## Features
-
-- Read scene, map, position, direction, and passability.
-- Read nearby events, messages, choices, and active windows.
-- Read party members, levels, HP, MP, states, and gold.
-- Read battle phase, battlers, and active battle commands.
-- Send movement, confirm, cancel, menu, page, dash, and ordered action sequences.
-- Reject stale state and duplicate commands using process, launch-generation, frame, and command identifiers.
-- Recover from malformed snapshots and wake a paused background keyboard loop without foreground activation.
-
-Actions still pass through the game's own movement, event, menu, and battle logic. The API does not directly modify health, inventory, variables, or story flags.
-
-## MCP tools
-
-| Tool | Purpose |
-| --- | --- |
-| `black_souls_status` | Inspect prepared files, the game process, and bridge health. |
-| `black_souls_launch` | Launch the prepared independent game copy. |
-| `black_souls_get_state` | Read scene, player, party, message, menu, and battle state. |
-| `black_souls_get_map` | Read nearby tiles, passability, and events. |
-| `black_souls_input` | Send one allowlisted keyboard action. |
-| `black_souls_input_sequence` | Submit ordered actions and frame waits. |
-| `black_souls_list_saves` | List saves in the independent game copy. |
-
-## Architecture
-
-```text
-MCP client
-    │ stdio
-    ▼
-Node.js / TypeScript server
-    │ atomic files + launch token
-    ▼
-BridgeRuntime
-    │ RGSS3 Input and game objects
-    ▼
-User-prepared independent BLACK SOULS copy
+```
+AI assistant (Codex)
+      │  MCP stdio
+      ▼
+black-souls-mcp server (Node.js)
+      │  file protocol (BridgeRuntime/)
+      ▼
+BlackSoulsBridge.rb  ←  injected into Scripts.rvdata2
+      │  per-frame hook on Scene_Base#update
+      ▼
+BLACK SOULS (RPG Maker VX Ace / RGSS3)
 ```
 
-State is refreshed at roughly 10 Hz. Map snapshots are emitted only when the map or player position changes. Commands are processed by the game thread one frame at a time. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+- **Server side (TypeScript)** — receives MCP calls, writes commands to `BridgeRuntime/inbox/` inside the game directory, and reads responses and state snapshots from `BridgeRuntime/outbox/` and `BridgeRuntime/state/`.
+- **Game side (RGSS3 Ruby)** — the bridge script runs once per frame, writes state and map snapshots, and reads and executes commands from the inbox.
+- **Security design** — commands carry a per-launch token to prevent cross-session replay; input actions are restricted to an allowlist; command queue depth and total sequence frames are bounded.
+
+---
 
 ## Prerequisites
 
-1. Windows 10/11.
-2. Node.js 18 or newer.
-3. Your own BLACK SOULS game copy.
-4. Python 3.11+ for the bridge patching utility.
-5. A `Data/Scripts.rvdata2` prepared from your own copy. This project does not automate game downloading or resource extraction.
+| Requirement | Version |
+|-------------|---------|
+| OS | Windows (bridge uses Win32 API and PowerShell) |
+| Node.js | 18 or later |
+| Python | 3.x (patching tools only) |
+| Game | A dedicated MCP copy of BLACK SOULS, separate from the Steam installation |
+
+> **Important**: prepare an independent copy of the game for MCP use. Do not patch the original Steam files.
+
+---
 
 ## Quick start
 
-### 1. Clone and verify the source
+### 1. Install dependencies and build
 
 ```powershell
-git clone https://github.com/yk4464/black-souls-mcp.git
-Set-Location .\black-souls-mcp
-npm.cmd ci
-npm.cmd run check
+npm ci
+npm run build
 ```
 
-### 2. Prepare an independent runtime
+### 2. Prepare the game files
 
-The default layout is:
+Place a **dedicated copy** of BLACK SOULS under `runtime\game\` (or anywhere; set environment variables to point to it later).
 
-```text
-runtime/
-├─ game/
-│  ├─ Game.exe
-│  ├─ Game.ini
-│  ├─ Game.rgss3a~
-│  └─ Data/Scripts.rvdata2
-└─ backup/
+The directory must contain:
+
+```
+runtime\game\
+  Game.exe
+  Game.ini
+  Game.rgss3a          ← original asset archive (keep untouched)
+  Data\Scripts.rvdata2 ← the bridge script will be injected here
 ```
 
-`runtime/` is ignored by Git. Follow [docs/SETUP.zh-CN.md](docs/SETUP.zh-CN.md) for the current preparation and bridge-patching procedure.
+### 3. Inject the bridge script
 
-### 3. Register with Codex
+**Option A: binary patcher (recommended, no extra Python packages)**
+
+Rename `Game.rgss3a` to `Game.rgss3a~` to preserve the original, then extract the scripts archive from it:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
+python scripts\extract_rgss3a_file.py `
+    runtime\game\Game.rgss3a~ `
+    "Data/Scripts.rvdata2" `
+    runtime\game\Data\Scripts.rvdata2
+```
+
+Inject the bridge:
+
+```powershell
+python scripts\patch_rvdata2_binary.py `
+    runtime\game\Data\Scripts.rvdata2 `
+    rgss\BlackSoulsBridge.rb `
+    --title Main `
+    --backup runtime\game\Data\Scripts.rvdata2.bak
+```
+
+**Option B: rubymarshal patcher**
+
+```powershell
+pip install -r requirements-tools.txt
+
+python scripts\patch_rvdata2.py `
+    runtime\game\Data\Scripts.rvdata2 `
+    rgss\BlackSoulsBridge.rb `
+    --title Main `
+    --backup runtime\game\Data\Scripts.rvdata2.bak
+```
+
+### 4. Register with Codex
+
+```powershell
 .\install.ps1
 ```
 
-For an external runtime:
+The script writes the MCP server block into `~\.codex\config.toml` and backs up the previous config automatically.
+
+**Custom paths:**
 
 ```powershell
-.\install.ps1 `
-  -RuntimeRoot 'D:\BlackSoulsRuntime' `
-  -GameDir 'D:\BlackSoulsRuntime\game'
+.\install.ps1 -RuntimeRoot "D:\bs-mcp\runtime" -GameDir "D:\bs-mcp\runtime\game"
 ```
 
-The installer backs up the current user's Codex `config.toml` before writing the `black_souls` MCP registration. Restart Codex afterward.
-
-### 4. Verify and use
-
-Call `black_souls_status` first, then `black_souls_launch`, `black_souls_get_state`, and `black_souls_get_map`.
-
-Example sequence arguments:
-
-```json
-{
-  "steps": [
-    { "action": "move_up" },
-    { "wait_frames": 12 },
-    { "action": "confirm" }
-  ]
-}
-```
-
-## Game fingerprint
-
-Calculate the SHA-256 value for your own executable:
+### 5. Verify the installation
 
 ```powershell
-(Get-FileHash -Algorithm SHA256 -LiteralPath '.\runtime\game\Game.exe').Hash
+.\check.ps1 -IncludeRuntime
 ```
 
-Set it for the current shell:
+Restart Codex to load the server.
+
+---
+
+## MCP tools
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `black_souls_status` | read-only | Server version, game file integrity, and bridge connection status |
+| `black_souls_launch` | write | Launch the game and wait for the bridge to become ready (default timeout 12 s) |
+| `black_souls_get_state` | read-only | Current scene, player position, party, message window, and battle state |
+| `black_souls_get_map` | read-only | Map tiles and events within a 6-tile radius of the player |
+| `black_souls_input` | write | Inject a single allowlisted input action (repeat up to 100 times) |
+| `black_souls_input_sequence` | write | Inject an ordered sequence of up to 200 steps (actions and frame waits) |
+| `black_souls_list_saves` | read-only | List save slots and metadata for the independent game copy |
+
+### Allowed input actions
+
+`move_up` · `move_down` · `move_left` · `move_right` · `confirm` · `cancel` · `open_menu` · `page_up` · `page_down` · `dash`
+
+### Limits
+
+| Item | Limit |
+|------|-------|
+| Single action repeat | 100 |
+| Sequence steps | 200 |
+| Sequence total frames | 3 600 |
+| Command queue depth | 128 |
+
+---
+
+## Configuration
+
+Set these environment variables, or place them in the `[mcp_servers.black_souls.env]` section of the Codex config:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BLACK_SOULS_ROOT` | Runtime root directory | `runtime/` under the repository |
+| `BLACK_SOULS_DIR` | Game directory | `$BLACK_SOULS_ROOT/game` |
+| `BLACK_SOULS_GAME_EXE_SHA256` | Expected SHA-256 of `Game.exe` for integrity checks | Built-in known hash |
+| `BLACK_SOULS_EXPECTED_SAVE_COUNT` | Save count the integration test expects to find | `0` |
+
+See `examples/env.example` and `examples/codex-config.toml` for sample configurations.
+
+---
+
+## Development
 
 ```powershell
-$env:BLACK_SOULS_GAME_EXE_SHA256 = '<YOUR_SHA256>'
+# Build + smoke test + unit tests (required before every PR)
+npm run check
+
+# Type-check only
+npm run typecheck
+
+# Integration tests (requires a prepared runtime directory)
+npm run test:integration
+
+# Live end-to-end tests (launches the game and sends real input)
+npm run test:live
+
+# Source + runtime + Codex registration all-in-one check
+.\check.ps1 -IncludeRuntime
 ```
 
-An empty value skips fingerprint comparison but still checks required files. Do this only after confirming the origin of the game files.
+---
 
-## Tests
+## Uninstall / rollback
 
-```powershell
-npm.cmd run check              # build, MCP handshake, discovery, synthetic tests
-npm.cmd run test:integration   # requires a prepared runtime
-npm.cmd run test:live          # launches the game and sends real keyboard input
-.\check.ps1 -IncludeRuntime    # source, runtime, and Codex registration checks
-```
-
-Live tests can change the current session's position or menu state but do not intentionally save. Keep your own save backup before running them.
-
-## Limitations
-
-- Game extraction and resource preparation vary by release and are not automated.
-- RPG Maker may pause input while in the background. The bridge posts messages only to a verified process and executable path; it does not emulate a mouse or bring the window to the foreground.
-- If a timeout says the game may already have consumed a command, read current state before retrying.
-- `BridgeRuntime` and the prepared game directory must remain trusted local paths.
-
-## Uninstall and rollback
+**Uninstall** (removes the Codex registration only; game and save files are untouched):
 
 ```powershell
 .\uninstall.ps1
+```
+
+**Roll back to the pre-install Codex config:**
+
+```powershell
 .\rollback.ps1
 ```
 
-These scripts only manage Codex registration and configuration backups. They do not delete games or saves.
+Backups are stored in `runtime\backup\` with timestamped names.
 
-## Security and privacy
+---
 
-- Local `stdio` only; no listening port.
-- Allowlisted actions with queue, step, and total-frame limits.
-- Game data, saves, runtime snapshots, logs, dependencies, and build outputs are ignored by Git.
-- Remove personal paths, save contents, and game files before filing an issue.
+## Security
 
-Report security problems privately through [GitHub Security Advisories](https://github.com/yk4464/black-souls-mcp/security/advisories/new). Use [Issues](https://github.com/yk4464/black-souls-mcp/issues) for other reports.
+This server is designed as a local `stdio` service for a local AI assistant. Wrapping it as a network service requires adding authentication, access controls, and rate limiting.
 
-## Contributing
+Report security issues privately via [GitHub Security Advisories](https://github.com/yk4464/black-souls-mcp/security/advisories/new). See [SECURITY.md](SECURITY.md) for details.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). `private: true` is intentionally kept in `package.json` to prevent accidental npm publication; it does not make the MIT-licensed GitHub source private.
+---
 
-## License and trademarks
+## License
 
-Source code in this repository is available under the [MIT License](LICENSE). BLACK SOULS, RPG Maker, related names, and game assets belong to their respective owners. This is an unofficial community project and is not affiliated with the game's creators, publisher, or engine vendor.
+[MIT](LICENSE) · by [yk4464](https://github.com/yk4464)
