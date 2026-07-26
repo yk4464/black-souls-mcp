@@ -114,9 +114,10 @@ runtime/
 `runtime/` is Git-ignored. Preparation in short: copy your own game files into `runtime/game/`, make sure `Data/Scripts.rvdata2` is extracted (use `scripts/extract_rgss3a_file.py` if needed), then inject `rgss/BlackSoulsBridge.rb` into the script archive:
 
 ```powershell
-python -m pip install -r requirements-tools.txt
-python .\scripts\patch_rvdata2.py .\runtime\game\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts.rvdata2.bak
+python .\scripts\patch_rvdata2_binary.py .\runtime\game\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts.rvdata2.bak
 ```
+
+`patch_rvdata2_binary.py` uses only the Python standard library and preserves the original byte layout; prefer it. The alternative `patch_rvdata2.py` requires `python -m pip install -r requirements-tools.txt` first.
 
 ### 3. Install into Codex
 

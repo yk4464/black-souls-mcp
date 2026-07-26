@@ -8,7 +8,7 @@ import { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, 
 import { interact, navigate } from "./navigation.js";
 import { battleAction } from "./battle.js";
 
-const SERVER_VERSION = "1.8.0";
+const SERVER_VERSION = "1.8.1";
 const server = new McpServer({ name: "black-souls-mcp", version: SERVER_VERSION });
 const outputSchema = { data: z.unknown() };
 const result = (value: unknown) => ({

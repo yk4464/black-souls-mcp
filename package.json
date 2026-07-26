@@ -1,6 +1,6 @@
 {
   "name": "black-souls-mcp",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "type": "module",
   "description": "Local stdio MCP bridge for BLACK SOULS and RPG Maker VX Ace / RGSS3",

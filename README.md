@@ -114,9 +114,10 @@ runtime/
 `runtime/` 已被 Git 忽略。准备步骤概述：把自己的游戏副本复制到 `runtime/game/`，确保 `Data/Scripts.rvdata2` 已解出（可用 `scripts/extract_rgss3a_file.py`），然后用桥接写入工具把 `rgss/BlackSoulsBridge.rb` 注入脚本档：
 
 ```powershell
-python -m pip install -r requirements-tools.txt
-python .\scripts\patch_rvdata2.py .\runtime\game\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts.rvdata2.bak
+python .\scripts\patch_rvdata2_binary.py .\runtime\game\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts.rvdata2.bak
 ```
+
+`patch_rvdata2_binary.py` 只用 Python 标准库，保持原字节布局，优先使用；备选的 `patch_rvdata2.py` 需要先 `python -m pip install -r requirements-tools.txt`。
 
 ### 3. 安装到 Codex
 

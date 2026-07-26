@@ -65,7 +65,7 @@ module Input
 end
 
 module BlackSoulsBridge
-  VERSION = "1.8.0"
+  VERSION = "1.8.1"
   PROTOCOL = "black-souls-bridge/1"
   ROOT = "BridgeRuntime"
   INBOX = ROOT + "/inbox"
@@ -195,11 +195,11 @@ module BlackSoulsBridge
     begin
       File.rename(temp, path)
     rescue Errno::EACCES, Errno::EPERM
+      # Retry twice immediately (no sleep) to handle transient AV locks without
+      # blocking the game's frame loop. On persistent failure the error propagates
+      # to BlackSoulsBridge.update's rescue and is logged; the next frame retries.
       attempt += 1
-      if attempt < 6
-        sleep(0.015 * attempt)
-        retry
-      end
+      retry if attempt < 3
       raise
     ensure
       begin
@@ -322,6 +322,11 @@ module BlackSoulsBridge
   end
 
   def self.read_commands
+    # Throttle inbox scans to every 6 frames (~100 ms at 60 fps) to avoid
+    # per-frame directory I/O overhead. 100 ms is well within the 60-second
+    # command timeout and is invisible to the TS-side 16 ms poll interval.
+    @scan_frame = @scan_frame.to_i + 1
+    return unless @scan_frame % 6 == 0
     available = MAX_QUEUE - @queue.length - (@active ? 1 : 0)
     return if available <= 0
     Dir.glob(INBOX + "/*.cmd").sort.first([8, available].min).each do |path|
