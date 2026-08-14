@@ -4,8 +4,9 @@
 
 [![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml) [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/yk4464/black-souls-mcp/blob/main/LICENSE)
 
-An MCP tool for BLACK SOULS. Put plainly, with no detours: it lets agent tools like Claude Code or Codex hook into BLACK SOULS.
-Purely for fun. The idea is simple — read the game's internal objects to get state, then feed actions into the game's own key input loop. No screenshots, no mouse simulation, and no vision model, so non-multimodal models work fine.
+A local MCP for BLACK SOULS. Put plainly: it lets Claude Code, Codex, and similar agents hook into the game. Purely for fun.
+
+Not screenshots, not OCR, not mouse simulation. It reads the game's internal objects and feeds actions into the native input loop, so a text-only model is enough. Pathfinding, dialogue, menus, and battle were calibrated on a live install — not a concept demo.
 
 > [!IMPORTANT]
 > This repository contains only the bridge program and MCP source. It does not include, download, or distribute the game itself, saves, assets, keys, or unpacked commercial game data. Prepare your own legally obtained game files before use.

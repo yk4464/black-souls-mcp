@@ -4,8 +4,9 @@
 
 [![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml) [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/yk4464/black-souls-mcp/blob/main/LICENSE)
 
-一个BLACK SOULS的mcp工具，我用最直白，最简洁，最不绕弯子的话告诉你：就是一个可以让你的Claudecode/Codex等agent工具接入BLACK SOULS的mcp。
-纯娱乐。原理很简单，就是读游戏内部对象拿状态，然后把动作送进游戏自带的按键输入循环，不截图、不模拟鼠标、同时也不需要图片模型，所以非图像模型也可以使用。
+一个 BLACK SOULS 的 MCP。最直白的说法：让 Claude Code / Codex 这类 agent 直接接入这款游戏。纯娱乐。
+
+原理很简单：读游戏内部对象拿状态，再把动作送进游戏自带的按键输入循环。不截图、不模拟鼠标、也不需要图片模型，所以非图像模型也能用。寻路、对话、菜单、战斗都在真机上校准过，不是概念 demo。
 
 > [!IMPORTANT]
 > 本仓库只包含桥接程序与 MCP 源码，不包含、不下载、也不分发游戏本体、存档、素材、密钥或解包后的商业游戏数据。使用前请自行准备合法获得的游戏文件。
