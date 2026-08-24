@@ -8,7 +8,8 @@ import { gameDir, installRoot } from "./config.js";
 export const BRIDGE_PROTOCOL = "black-souls-bridge/1";
 export const ACTIONS = [
   "move_up", "move_down", "move_left", "move_right",
-  "confirm", "cancel", "open_menu", "page_up", "page_down", "dash",
+  "dash_up", "dash_down", "dash_left", "dash_right",
+  "confirm", "cancel", "open_menu", "page_up", "page_down", "dash", "text_skip",
 ] as const;
 export type Action = typeof ACTIONS[number];
 export type SequenceStep = { action: Action; repeat?: number } | { wait_frames: number };

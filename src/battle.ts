@@ -15,6 +15,12 @@ const turnOf = (battle: Record<string, unknown>): number | null => Number.isFini
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const enemiesOf = (state: Record<string, unknown>) => (Array.isArray(objectValue(state.battle).enemies) ? objectValue(state.battle).enemies as unknown[] : []).map(objectValue);
 
+export const allEnemiesDefeated = (state: Record<string, unknown>): boolean => {
+  const visibleEnemies = enemiesOf(state).filter((enemy) => enemy.hidden !== true);
+  return visibleEnemies.length > 0
+    && visibleEnemies.every((enemy) => enemy.dead === true || Number(enemy.hp || 0) <= 0);
+};
+
 const COMMAND_TARGET: Record<BattleActionType, { symbol: string; occurrence: number }> = {
   attack: { symbol: "attack", occurrence: 0 },
   skill: { symbol: "skill", occurrence: 0 },
@@ -206,6 +212,10 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
       const battle = objectValue(after.battle);
       const scene = String(objectValue(after.scene).name || "");
       if (!battle.active || scene !== "Scene_Battle") { ended = true; break; }
+      // Victory settlement keeps both Scene_Battle and $game_party.in_battle true
+      // until its text is confirmed. Detect the troop's defeated state here so the
+      // caller advances those screens instead of waiting for the full timeout.
+      if (allEnemiesDefeated(after)) { ended = true; break; }
       const party = objectValue(after.party);
       const members = (Array.isArray(party.members) ? party.members : []).map(objectValue);
       // Defeat text can leave Scene_Battle and $game_party.in_battle true until the

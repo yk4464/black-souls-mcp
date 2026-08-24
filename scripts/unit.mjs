@@ -12,11 +12,11 @@ const runtime = path.join(game, "BridgeRuntime");
 process.env.BLACK_SOULS_ROOT = root;
 process.env.BLACK_SOULS_DIR = game;
 
-const { BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, sendQuery, sendSequence, triggerSave, waitForCondition } = await import("../dist/bridge.js");
+const { ACTIONS, BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, sendQuery, sendSequence, triggerSave, waitForCondition } = await import("../dist/bridge.js");
 const { killGame, launchGame, listSaves } = await import("../dist/game.js");
 const { appendSessionLog, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } = await import("../dist/memory.js");
 const { findPath, navigate, interact } = await import("../dist/navigation.js");
-const { battleAction } = await import("../dist/battle.js");
+const { allEnemiesDefeated, battleAction } = await import("../dist/battle.js");
 const token = "0123456789abcdef0123456789abcdef";
 const now = () => Date.now() / 1000;
 
@@ -89,6 +89,8 @@ try {
   const status = await bridgeStatus();
   assert.equal(status.connected, true);
   assert.equal(status.pid, process.pid);
+  assert.ok(ACTIONS.includes("dash_up"));
+  assert.ok(ACTIONS.includes("text_skip"));
   assert.equal((await readState()).frame, 120);
   assert.equal((await readMap()).map_id, 104);
   const situationState = await writeJson(path.join(runtime, "state"), "state-situation.json", {
@@ -106,6 +108,9 @@ try {
   await fs.unlink(situationState); await fs.unlink(situationMap);
   assert.equal((await advanceDialogue()).ok, false);
   assert.equal((await battleAction("attack")).ok, false);
+  assert.equal(allEnemiesDefeated({ battle: { enemies: [{ hp: 0, dead: true, hidden: false }] } }), true);
+  assert.equal(allEnemiesDefeated({ battle: { enemies: [{ hp: 1, dead: false, hidden: false }] } }), false);
+  assert.equal(allEnemiesDefeated({ battle: { enemies: [{ hp: 99, dead: false, hidden: true }] } }), false);
 
   // A skill the actor cannot pay for must be refused before any key is sent. Letting it
   // through makes the game buzz, commit nothing, and the call report a phantom success.
@@ -188,6 +193,11 @@ try {
     /unknown query: unknown_query_xyz/,
   );
   await assert.rejects(() => sendQuery("variables", "1", 50), /timed out/);
+  const [, acceleratedInputCommand] = await Promise.all([
+    sendSequence([{ action: "dash_up" }, { action: "text_skip", repeat: 3 }], 3000),
+    answerNextQuery({ ok: true, frame: 131 }),
+  ]);
+  assert.match(acceleratedInputCommand, /steps=dash_up:1;text_skip:3/);
   await assert.rejects(
     () => sendSequence(Array.from({ length: 7 }, () => ({ wait_frames: 600 })), 500),
     /maximum is 3600/,

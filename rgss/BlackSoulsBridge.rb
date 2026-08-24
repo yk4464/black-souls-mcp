@@ -76,6 +76,7 @@ module BlackSoulsBridge
   MAP_DIR = ROOT + "/map"
   LAUNCH_FILE = ROOT + "/launch.token"
   ERROR_FILE = ROOT + "/error.log"
+  FRAME_RATE_FILE = ROOT + "/frame_rate.txt"
   STATE_INTERVAL = 6
   MAP_RADIUS = 6
   MAX_COMMAND_BYTES = 16384
@@ -87,12 +88,17 @@ module BlackSoulsBridge
     "move_down" => :DOWN,
     "move_left" => :LEFT,
     "move_right" => :RIGHT,
+    "dash_up" => [:A, :UP],
+    "dash_down" => [:A, :DOWN],
+    "dash_left" => [:A, :LEFT],
+    "dash_right" => [:A, :RIGHT],
     "confirm" => :C,
     "cancel" => :B,
     "open_menu" => :B,
     "page_up" => :L,
     "page_down" => :R,
-    "dash" => :A
+    "dash" => :A,
+    "text_skip" => :CTRL
   }
 
   @initialized = false
@@ -117,6 +123,8 @@ module BlackSoulsBridge
     ensure_directory(STATE_DIR)
     ensure_directory(MAP_DIR)
     @session_epoch = Time.now.to_i
+    @default_frame_rate = (Graphics.frame_rate rescue 60)
+    @applied_frame_rate = @default_frame_rate
     @launch_token = read_launch_token
     snapshot_json(INFO_DIR, "info", {
       "protocol" => PROTOCOL,
@@ -127,6 +135,27 @@ module BlackSoulsBridge
       "capabilities" => ["state", "map", "input", "input_sequence", "query", "query_v2"]
     })
     @initialized = true
+  end
+
+  # Optional, sandbox-friendly fast-forward.  The controller may write a single integer
+  # to BridgeRuntime/frame_rate.txt; no Ruby expression is evaluated.  Removing the file
+  # restores the rate observed at launch.  This accelerates ordinary game frames and event
+  # waits while leaving every battle, reward and save mutation to RPG Maker itself.
+  def self.apply_frame_rate_override
+    return unless Graphics.frame_count % 30 == 0
+    target = @default_frame_rate || 60
+    if File.file?(FRAME_RATE_FILE)
+      text = File.read(FRAME_RATE_FILE).to_s.strip
+      target = text.to_i if text =~ /\A\d{2,3}\z/
+    end
+    # VX Ace clamps Graphics.frame_rate to 120; cap explicitly so the reported
+    # configuration and the engine's effective value cannot diverge.
+    target = [[target.to_i, 30].max, 120].min
+    return if @applied_frame_rate == target && Graphics.frame_rate == target
+    Graphics.frame_rate = target
+    @applied_frame_rate = target
+  rescue => error
+    append_error(error)
   end
 
   def self.process_id
@@ -405,7 +434,9 @@ module BlackSoulsBridge
       if name == "wait"
         @active["wait"] = count - 1
       else
-        Input.bsmcp_inject(ALLOWED_ACTIONS[name], 1)
+        inputs = ALLOWED_ACTIONS[name]
+        inputs = [inputs] unless inputs.is_a?(Array)
+        inputs.each { |key| Input.bsmcp_inject(key, 1) }
       end
       return
     end
@@ -421,6 +452,7 @@ module BlackSoulsBridge
       "pid" => process_id,
       "launch_token" => @launch_token,
       "frame" => Graphics.frame_count,
+      "frame_rate" => (Graphics.frame_rate rescue nil),
       "player" => player_summary
     })
     @active = nil
@@ -811,6 +843,7 @@ module BlackSoulsBridge
       "pid" => process_id,
       "launch_token" => @launch_token,
       "frame" => Graphics.frame_count,
+      "frame_rate" => (Graphics.frame_rate rescue nil),
       "updated_at" => Time.now.to_f,
       "scene" => {
         "name" => scene ? scene.class.to_s : nil,
@@ -943,6 +976,7 @@ module BlackSoulsBridge
     return if @in_update
     @in_update = true
     initialize_bridge
+    apply_frame_rate_override
     read_commands
     process_command
     write_snapshots
