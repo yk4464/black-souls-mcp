@@ -206,6 +206,12 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
       const battle = objectValue(after.battle);
       const scene = String(objectValue(after.scene).name || "");
       if (!battle.active || scene !== "Scene_Battle") { ended = true; break; }
+      const party = objectValue(after.party);
+      const members = (Array.isArray(party.members) ? party.members : []).map(objectValue);
+      // Defeat text can leave Scene_Battle and $game_party.in_battle true until the
+      // player confirms it. Waiting only for a scene change burns the whole timeout
+      // and returns a misleading "battle still active" result after everyone is dead.
+      if (members.length > 0 && members.every((member) => Number(member.hp || 0) <= 0)) { ended = true; break; }
       const active = activeWindowOf(after);
       if (active && (active.class === "Window_ActorCommand" || active.class === "Window_PartyCommand")) break;
     }

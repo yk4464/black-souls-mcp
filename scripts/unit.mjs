@@ -13,7 +13,7 @@ process.env.BLACK_SOULS_ROOT = root;
 process.env.BLACK_SOULS_DIR = game;
 
 const { BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, sendQuery, sendSequence, triggerSave, waitForCondition } = await import("../dist/bridge.js");
-const { killGame, launchGame } = await import("../dist/game.js");
+const { killGame, launchGame, listSaves } = await import("../dist/game.js");
 const { appendSessionLog, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } = await import("../dist/memory.js");
 const { findPath, navigate, interact } = await import("../dist/navigation.js");
 const { battleAction } = await import("../dist/battle.js");
@@ -51,6 +51,16 @@ const answerNextQuery = async (response) => {
 };
 
 try {
+  await fs.mkdir(game, { recursive: true });
+  await fs.writeFile(path.join(game, "Save01.rvdata2"), "slot-one", "ascii");
+  await fs.writeFile(path.join(game, "Save02.rvdata2"), "slot-two", "ascii");
+  const indexedSaves = await listSaves();
+  assert.deepEqual(indexedSaves.map(({ name, slot, display_slot }) => ({ name, slot, display_slot })), [
+    { name: "Save01.rvdata2", slot: 0, display_slot: 1 },
+    { name: "Save02.rvdata2", slot: 1, display_slot: 2 },
+  ]);
+  await Promise.all(["Save01.rvdata2", "Save02.rvdata2"].map((name) => fs.unlink(path.join(game, name))));
+
   const base = {
     protocol: BRIDGE_PROTOCOL,
     bridge_version: "1.1.1",
@@ -155,6 +165,10 @@ try {
   const blocked = grid.map((tile) => ({ ...tile, passable: { up: false, down: false, left: false, right: false } }));
   assert.deepEqual(findPath(blocked, { x: 0, y: 0 }, { x: 2, y: 0 }), []);
   assert.equal(findPath(grid, { x: 0, y: 0 }, { x: 7, y: 0 }), null);
+  const corridor = [0, 1, 2].map((x) => ({ x, y: 0, passable: { up: false, down: false, left: x > 0, right: x < 2 } }));
+  assert.deepEqual(findPath(corridor, { x: 0, y: 0 }, { x: 2, y: 0 }, 6, new Set(["1,0"])), [], "an occupied event tile must block the route");
+  corridor[1].passable.left = false;
+  assert.deepEqual(findPath(corridor, { x: 0, y: 0 }, { x: 1, y: 0 }), [], "movement also requires reverse passability from the destination tile");
   const [variables, variablesCommand] = await Promise.all([
     queryVariables([1, 2]),
     answerNextQuery({ ok: true, data: { variables: { "1": 42, "2": "ready" } } }),
@@ -179,6 +193,69 @@ try {
     /maximum is 3600/,
     "oversized sequences must be rejected before a command file is written",
   );
+
+  const preResetState = await writeJson(path.join(runtime, "state"), "state-pre-reset.json", {
+    ...base, frame: 500, updated_at: now(), scene: { name: "Scene_Title" },
+  });
+  const resetAction = sendSequence([{ action: "confirm" }], 3000);
+  let postResetState;
+  const resetResponder = (async () => {
+    await answerNextQuery({ ok: true, frame: 3 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    postResetState = await writeJson(path.join(runtime, "state"), "state-post-reset.json", {
+      ...base, frame: 600, updated_at: now(), scene: { name: "Scene_Map" },
+    });
+  })();
+  const [resetResult] = await Promise.all([resetAction, resetResponder]);
+  assert.equal(resetResult.frame_before, 500);
+  assert.equal(resetResult.frame, 3);
+  assert.equal(resetResult.state?.frame, 600, "a post-reset snapshot remains valid even if its counter already passed the old frame");
+  assert.equal(resetResult.state?.scene?.name, "Scene_Map");
+  await Promise.all([fs.unlink(preResetState), fs.unlink(postResetState)]);
+
+  // Choices can already be declared while a preceding text pause still owns input, and
+  // BLACK SOULS then opens the menu with no selected row (index -1). Advance the pause,
+  // move the real cursor to row zero, and only then confirm.
+  const choiceState = await writeJson(path.join(runtime, "state"), "state-choice.json", {
+    ...base, frame: 510, updated_at: now(), scene: {
+      name: "Scene_Map",
+      windows: [{ class: "Window_ChoiceList", active: false, index: 0, item_max: 2, col_max: 1, current_symbol: null }],
+    },
+    message: { busy: true, text: "Confirm?", choices: ["Yes", "No"] },
+  });
+  let openedChoiceState; let selectedChoiceState; let completedChoiceState;
+  const chooseFirst = advanceDialogue(0, 30, 3000);
+  const choiceResponder = (async () => {
+    const revealCommand = await answerNextQuery({ ok: true, frame: 511 });
+    assert.match(revealCommand, /confirm:1/, "declared choices must not be treated as an active window before the text pause clears");
+    openedChoiceState = await writeJson(path.join(runtime, "state"), "state-choice-opened.json", {
+      ...base, frame: 512, updated_at: now(), scene: {
+        name: "Scene_Map",
+        windows: [{ class: "Window_ChoiceList", active: true, index: -1, item_max: 2, col_max: 1, current_symbol: null }],
+      },
+      message: { busy: true, text: "Confirm?", choices: ["Yes", "No"] },
+    });
+    const cursorCommand = await answerNextQuery({ ok: true, frame: 513 });
+    assert.match(cursorCommand, /move_down:1/, "an unselected choice window must move to row zero before confirmation");
+    selectedChoiceState = await writeJson(path.join(runtime, "state"), "state-choice-selected.json", {
+      ...base, frame: 514, updated_at: now(), scene: {
+        name: "Scene_Map",
+        windows: [{ class: "Window_ChoiceList", active: true, index: 0, item_max: 2, col_max: 1, current_symbol: null }],
+      },
+      message: { busy: true, text: "Confirm?", choices: ["Yes", "No"] },
+    });
+    const confirmCommand = await answerNextQuery({ ok: true, frame: 515 });
+    assert.match(confirmCommand, /confirm:1/, "the requested choice must be confirmed after the cursor reaches it");
+    completedChoiceState = await writeJson(path.join(runtime, "state"), "state-choice-completed.json", {
+      ...base, frame: 516, updated_at: now(), scene: { name: "Scene_Map", windows: [] },
+      message: { busy: false, text: "", choices: [] },
+    });
+  })();
+  const [choiceResult] = await Promise.all([chooseFirst, choiceResponder]);
+  assert.equal(choiceResult.ok, true);
+  assert.equal(choiceResult.dialogue_ended, true);
+  assert.equal(choiceResult.lines_advanced, 1);
+  await Promise.all([choiceState, openedChoiceState, selectedChoiceState, completedChoiceState].map((file) => fs.unlink(file)));
 
   await fs.writeFile(path.join(runtime, "state", "state-corrupt.json"), "{broken", "utf8");
   const future = new Date(Date.now() + 1000);

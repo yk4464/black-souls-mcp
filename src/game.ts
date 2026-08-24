@@ -68,7 +68,11 @@ export async function listSaves(): Promise<Array<Record<string, unknown>>> {
     .sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
   return Promise.all(saves.map(async (entry) => {
     const stat = await fs.stat(path.join(gameDir(), entry.name));
-    return { name: entry.name, slot: Number(entry.name.match(/\d+/)?.[0]), bytes: stat.size, modified: stat.mtime.toISOString() };
+    const displaySlot = Number(entry.name.match(/\d+/)?.[0]);
+    // save/load tool inputs are zero-indexed, so the machine-facing slot returned
+    // here must be directly reusable. Keep the filename's one-based number explicit
+    // for humans instead of silently mixing two incompatible numbering systems.
+    return { name: entry.name, slot: displaySlot - 1, display_slot: displaySlot, bytes: stat.size, modified: stat.mtime.toISOString() };
   }));
 }
 

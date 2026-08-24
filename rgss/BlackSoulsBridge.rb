@@ -155,10 +155,30 @@ module BlackSoulsBridge
 
   def self.json_escape(value)
     text = utf8(value)
-    text = text.gsub("\\", "\\\\")
-    text = text.gsub('"', '\\"')
-    text = text.gsub("\r", "\\r").gsub("\n", "\\n").gsub("\t", "\\t")
-    '"' + text + '"'
+    escaped = ""
+    # String#gsub interprets backslashes in its replacement string.  The former
+    # gsub("\\", "\\\\") therefore left RPG Maker control codes such as
+    # \N[1] with only one slash and produced invalid JSON.  Build the escaped
+    # value character-by-character so every JSON control character is explicit.
+    text.each_char do |character|
+      codepoint = character.ord
+      case codepoint
+      when 0x22 then escaped << 0x5c << 0x22 # quotation mark
+      when 0x5c then escaped << 0x5c << 0x5c # reverse solidus
+      when 0x08 then escaped << "\\b"
+      when 0x09 then escaped << "\\t"
+      when 0x0a then escaped << "\\n"
+      when 0x0c then escaped << "\\f"
+      when 0x0d then escaped << "\\r"
+      else
+        if codepoint < 0x20
+          escaped << sprintf("\\u%04x", codepoint)
+        else
+          escaped << character
+        end
+      end
+    end
+    '"' + escaped + '"'
   end
 
   def self.to_json(value)
@@ -453,10 +473,22 @@ module BlackSoulsBridge
     append_error(error); { "items" => [], "error" => error.message }
   end
 
+  def self.equipment_summary(item)
+    return nil unless item
+    params = safe_call(item, :params, []) || []
+    names = ["mhp", "mmp", "atk", "def", "mat", "mdf", "agi", "luk"]
+    result = { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, "") }
+    names.each_with_index { |name, index| result[name] = (params[index] || 0).to_i }
+    result
+  rescue
+    { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, ""), "mhp" => 0, "mmp" => 0,
+      "atk" => 0, "def" => 0, "mat" => 0, "mdf" => 0, "agi" => 0, "luk" => 0 }
+  end
+
   def self.query_weapons
     return { "weapons" => [] } unless defined?($game_party) && $game_party
     weapons = safe_call($game_party, :weapons, [])
-    { "weapons" => weapons.map { |item| { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, ""), "count" => safe_call($game_party, :item_number, 0, item), "atk" => safe_call(item, :atk, 0), "note" => (safe_call(item, :note, "").to_s.lines.first.to_s.strip rescue "") } } }
+    { "weapons" => weapons.map { |item| equipment_summary(item).merge({ "count" => safe_call($game_party, :item_number, 0, item), "note" => (safe_call(item, :note, "").to_s.lines.first.to_s.strip rescue "") }) } }
   rescue => error
     append_error(error); { "weapons" => [], "error" => error.message }
   end
@@ -464,7 +496,7 @@ module BlackSoulsBridge
   def self.query_armors
     return { "armors" => [] } unless defined?($game_party) && $game_party
     armors = safe_call($game_party, :armors, [])
-    { "armors" => armors.map { |item| { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, ""), "count" => safe_call($game_party, :item_number, 0, item), "def" => safe_call(item, :def, 0), "note" => (safe_call(item, :note, "").to_s.lines.first.to_s.strip rescue "") } } }
+    { "armors" => armors.map { |item| equipment_summary(item).merge({ "count" => safe_call($game_party, :item_number, 0, item), "note" => (safe_call(item, :note, "").to_s.lines.first.to_s.strip rescue "") }) } }
   rescue => error
     append_error(error); { "armors" => [], "error" => error.message }
   end
@@ -472,7 +504,7 @@ module BlackSoulsBridge
   def self.query_full_party
     return { "members" => [] } unless defined?($game_party) && $game_party
     { "members" => $game_party.members.map { |actor|
-      equips = safe_call(actor, :equips, []).map { |item| item ? { "id" => safe_call(item, :id, 0), "name" => safe_call(item, :name, "") } : nil }
+      equips = safe_call(actor, :equips, []).map { |item| equipment_summary(item) }
       skills = safe_call(actor, :skills, []).map { |skill| { "id" => safe_call(skill, :id, 0), "name" => safe_call(skill, :name, ""), "mp_cost" => safe_call(skill, :mp_cost, 0) } }
       actor_summary(actor).merge({ "atk" => safe_call(actor, :atk, 0), "def" => safe_call(actor, :def, 0), "mat" => safe_call(actor, :mat, 0), "mdf" => safe_call(actor, :mdf, 0), "agi" => safe_call(actor, :agi, 0), "luk" => safe_call(actor, :luk, 0), "equips" => equips, "skills" => skills })
     } }
@@ -511,7 +543,7 @@ module BlackSoulsBridge
     events = safe_call($game_map, :events, {})
     event = events[event_id] rescue nil
     return { "found" => false } unless event
-    data = safe_call(event, :event, nil); pages = []
+    data = safe_call(event, :event, nil) || safe_instance_variable(event, :@event, nil); pages = []
     data_pages = data ? safe_call(data, :pages, []) : []
     active_page = safe_instance_variable(event, :@page, nil)
     data_pages.each_with_index do |page, index|
@@ -698,15 +730,33 @@ module BlackSoulsBridge
     return if object_id && seen[object_id]
     seen[object_id] = true if object_id
     if defined?(Window_Selectable) && value.is_a?(Window_Selectable)
+      item_max = safe_call(value, :item_max, 0)
+      col_max = safe_call(value, :col_max, 1)
+      current_symbol = safe_call(value, :current_symbol, nil)
+      # VX Ace's name-entry window manages its cursor itself and intentionally does
+      # not override Window_Selectable#item_max or #col_max. Reading the inherited
+      # methods therefore reports 0/1 even though the real grid contains 90 cells
+      # in ten columns. Use the current table so translated alphabets also work.
+      if value.class.to_s == "Window_NameInput"
+        tables = safe_call(value, :table, [])
+        page = value.instance_variable_get(:@page) rescue 0
+        table = tables[page] rescue nil
+        if table.is_a?(Array) && !table.empty?
+          item_max = table.size
+          col_max = 10
+          index = safe_call(value, :index, -1)
+          current_symbol = table[index] if index >= 0 && index < table.size
+        end
+      end
       results << {
         "variable" => path,
         "class" => value.class.to_s,
         "active" => safe_call(value, :active, false),
         "visible" => safe_call(value, :visible, false),
         "index" => safe_call(value, :index, -1),
-        "item_max" => safe_call(value, :item_max, 0),
-        "col_max" => safe_call(value, :col_max, 1),
-        "current_symbol" => safe_call(value, :current_symbol, nil)
+        "item_max" => item_max,
+        "col_max" => col_max,
+        "current_symbol" => current_symbol
       }
     elsif value.is_a?(Array)
       value.each_with_index do |child, index|
@@ -789,13 +839,23 @@ module BlackSoulsBridge
   end
 
   def self.event_summary(event)
-    data = safe_call(event, :event, nil)
+    # VX Ace stores RPG::Event in @event but does not expose an `event` reader.
+    # The old safe_call therefore made every name and page list look empty.
+    data = safe_call(event, :event, nil) || safe_instance_variable(event, :@event, nil)
+    active_page = safe_instance_variable(event, :@page, nil)
+    pages = data ? safe_call(data, :pages, []) : []
+    page_index = active_page && pages.respond_to?(:index) ? pages.index(active_page) : nil
     {
       "id" => event.id,
       "name" => data ? data.name : "",
       "x" => event.x,
       "y" => event.y,
       "direction" => event.direction,
+      "character_name" => safe_call(event, :character_name, ""),
+      "character_index" => safe_call(event, :character_index, 0),
+      "tile_id" => safe_call(event, :tile_id, 0),
+      "active_page" => page_index ? page_index + 1 : nil,
+      "erased" => !!safe_instance_variable(event, :@erased, false),
       "trigger" => safe_call(event, :trigger, nil),
       "priority_type" => safe_call(event, :priority_type, nil),
       "through" => safe_call(event, :through, false)
@@ -864,7 +924,11 @@ module BlackSoulsBridge
       cleanup_snapshots(STATE_DIR, "state", 24) if frame % 120 == 0
     end
     key = if map_ready? && $game_player
-      [$game_map.map_id, $game_player.x, $game_player.y]
+      events = safe_call($game_map, :events, {})
+      values = events.respond_to?(:values) ? events.values : []
+      event_key = values.map { |event| [safe_call(event, :id, 0), safe_call(event, :x, 0), safe_call(event, :y, 0),
+        safe_instance_variable(event, :@page, nil).object_id, !!safe_instance_variable(event, :@erased, false)] }.sort_by { |entry| entry[0] }
+      [$game_map.map_id, $game_player.x, $game_player.y, event_key]
     else
       [:unavailable, (SceneManager.scene.class.to_s rescue "")]
     end
