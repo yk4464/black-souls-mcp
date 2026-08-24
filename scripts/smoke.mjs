@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 
-const child = spawn(process.execPath, ["dist/index.js"], { stdio: ["pipe", "pipe", "pipe"] });
+// Keep the protocol smoke test deterministic even when a real MCP game session is
+// currently running in the repository's default runtime directory.
+const isolatedRoot = path.join(os.tmpdir(), `black-souls-mcp-smoke-${process.pid}`);
+const child = spawn(process.execPath, ["dist/index.js"], {
+  stdio: ["pipe", "pipe", "pipe"],
+  env: {
+    ...process.env,
+    BLACK_SOULS_ROOT: isolatedRoot,
+    BLACK_SOULS_DIR: path.join(isolatedRoot, "game"),
+    BLACK_SOULS_GAME_EXE_SHA256: "",
+  },
+});
 let stdout = "";
 let stderr = "";
 let stdoutBuffer = "";
