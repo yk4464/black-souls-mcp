@@ -954,8 +954,18 @@ export async function prepareBridgeRuntime(launchToken: string): Promise<{ archi
   if (!/^[a-zA-Z0-9_-]{16,100}$/.test(launchToken)) throw new Error("Invalid launch token");
   const runtime = runtimeDir();
   let archivedRuntime: string | null = null;
+  let frameRateOverride: string | null = null;
   try {
     await fs.access(runtime);
+    try {
+      const configured = (await fs.readFile(path.join(runtime, "frame_rate.txt"), "ascii")).trim();
+      const parsed = Number(configured);
+      if (/^\d{2,3}$/.test(configured) && Number.isInteger(parsed) && parsed >= 30 && parsed <= 120) {
+        frameRateOverride = `${parsed}\n`;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     const archiveRoot = path.join(installRoot(), "extract");
     await fs.mkdir(archiveRoot, { recursive: true });
     const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
@@ -966,6 +976,9 @@ export async function prepareBridgeRuntime(launchToken: string): Promise<{ archi
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await Promise.all([inboxDir(), outboxDir(), infoDir(), stateDir(), mapDir()].map((directory) => fs.mkdir(directory, { recursive: true })));
+  if (frameRateOverride !== null) {
+    await fs.writeFile(path.join(runtime, "frame_rate.txt"), frameRateOverride, { encoding: "ascii", flag: "wx" });
+  }
   const temp = `${launchTokenFile()}.tmp.${process.pid}`;
   await fs.writeFile(temp, `${launchToken}\n`, { encoding: "ascii", flag: "wx" });
   await retryFileOperation(() => fs.rename(temp, launchTokenFile()));

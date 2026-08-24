@@ -165,6 +165,10 @@ Example arguments for a consecutive action run:
 }
 ```
 
+For optional fast-forwarding in the independent MCP copy, write one integer from `30` to `120` to
+`BridgeRuntime/frame_rate.txt`. Valid values survive MCP game restarts; remove the file to restore the
+launch-time frame rate. The effective value is returned as `frame_rate` in state snapshots.
+
 ## Game version fingerprint
 
 Get the SHA-256 of your own `Game.exe`:

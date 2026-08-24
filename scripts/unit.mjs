@@ -334,9 +334,11 @@ try {
   assert.ok(stale.reasons.includes("stale_heartbeat"));
 
   const nextToken = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  await fs.writeFile(path.join(runtime, "frame_rate.txt"), "120\n", "ascii");
   const prepared = await prepareBridgeRuntime(nextToken);
   assert.ok(prepared.archived_runtime?.startsWith(path.join(root, "extract")));
   assert.equal((await fs.readFile(path.join(runtime, "launch.token"), "ascii")).trim(), nextToken);
+  assert.equal((await fs.readFile(path.join(runtime, "frame_rate.txt"), "ascii")).trim(), "120");
   assert.equal((await bridgeStatus()).connected, false);
   await assert.rejects(() => sendQuery("variables"), /bridge is not ready/i);
   assert.deepEqual(await killGame(), { ok: true, pid: null, signal: "none", message: "not running" });
