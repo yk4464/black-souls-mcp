@@ -20,7 +20,7 @@ Once connected, an MCP client can read:
 - Party level, HP, MP, states, gold
 - Battle phase, units on both sides, currently available commands
 
-It can also drive the character: move, confirm, cancel, page, dash, or submit a whole run of consecutive actions at once — for example "walk forward three steps, then open the menu and check equipment".
+It can also drive the character: move, confirm, cancel, page, dash, fast-forward text with Ctrl, or submit a whole run of consecutive actions at once. `dash_up/down/left/right` combines a direction with the game's Shift/run input on the same frame; repeatable `text_skip` mirrors holding Ctrl.
 
 Input goes only through the game's own movement / event / menu / battle handling. The interface never writes HP, items, variables, or story switches directly. Commands carry a process ID, launch generation, frame number, and command number, so stale state and duplicate commands are rejected; corrupt snapshots are skipped automatically. When RPG Maker suspends the game in the background, the bridge can resume the keyboard loop without stealing the foreground window.
 
@@ -164,6 +164,10 @@ Example arguments for a consecutive action run:
   ]
 }
 ```
+
+For optional fast-forwarding in the independent MCP copy, write one integer from `30` to `120` to
+`BridgeRuntime/frame_rate.txt`. Valid values survive MCP game restarts; remove the file to restore the
+launch-time frame rate. The effective value is returned as `frame_rate` in state snapshots.
 
 ## Game version fingerprint
 

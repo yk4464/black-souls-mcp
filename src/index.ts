@@ -57,7 +57,7 @@ server.registerTool("black_souls_get_map", {
 }, async () => execute(() => readMap()));
 
 server.registerTool("black_souls_input", {
-  description: "Inject one allowlisted virtual RPG Maker input into the normal game input loop.",
+  description: "Inject one allowlisted virtual RPG Maker input into the normal game input loop. Use dash_up/down/left/right for Shift-style running and text_skip (repeat as needed) for Ctrl-style rapid text advance.",
   inputSchema: {
     action: z.enum(ACTIONS),
     repeat: z.number().int().min(1).max(100).optional(),
@@ -72,7 +72,7 @@ const stepSchema = z.union([
   z.object({ wait_frames: z.number().int().min(1).max(600) }),
 ]);
 server.registerTool("black_souls_input_sequence", {
-  description: "Inject up to 200 allowlisted inputs and frame waits as one ordered sequence.",
+  description: "Inject up to 200 allowlisted inputs and frame waits as one ordered sequence. Composite dash directions hold the run modifier with movement; repeated text_skip mirrors holding Ctrl through dialogue or settlement text.",
   inputSchema: { steps: z.array(stepSchema).min(1).max(200), timeout_ms: z.number().int().min(500).max(60000).optional() },
   outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
