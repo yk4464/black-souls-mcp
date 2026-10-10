@@ -8,7 +8,8 @@ import { gameDir, installRoot } from "./config.js";
 export const BRIDGE_PROTOCOL = "black-souls-bridge/1";
 export const ACTIONS = [
   "move_up", "move_down", "move_left", "move_right",
-  "confirm", "cancel", "open_menu", "page_up", "page_down", "dash",
+  "dash_up", "dash_down", "dash_left", "dash_right",
+  "confirm", "cancel", "open_menu", "page_up", "page_down", "dash", "text_skip",
 ] as const;
 export type Action = typeof ACTIONS[number];
 export type SequenceStep = { action: Action; repeat?: number } | { wait_frames: number };
@@ -353,12 +354,21 @@ function commandLoopNudger(pid: number): () => Promise<void> {
   };
 }
 
-async function stateAtOrAfter(token: string, frame: number, timeoutMs = 1200): Promise<Record<string, unknown> | null> {
+async function stateAtOrAfter(token: string, frame: number, previousFrame: number, responseWrittenAtMs: number, timeoutMs = 1200): Promise<Record<string, unknown> | null> {
   const deadline = Date.now() + timeoutMs;
+  const frameReset = frame < previousFrame;
   while (Date.now() < deadline) {
     try {
       const state = await readStateSnapshot(token);
-      if (Number(state.frame || 0) >= frame) return state;
+      const stateFrame = Number(state.frame || 0);
+      const stateUpdatedAtMs = Number(state.updated_at || 0) * 1000;
+      // DataManager.setup_new_game and load_game reset Graphics.frame_count. In that
+      // case an old snapshot from before the transition has a much larger frame number
+      // and would otherwise be accepted immediately as the post-command state. A valid
+      // post-reset snapshot may already climb past previousFrame on a slow filesystem,
+      // so its bridge timestamp can also prove it was written after the response.
+      const postResponse = Number.isFinite(stateUpdatedAtMs) && stateUpdatedAtMs >= responseWrittenAtMs;
+      if (stateFrame >= frame && (!frameReset || stateFrame < previousFrame || postResponse)) return state;
     } catch { /* the command response remains useful */ }
     await sleep(20);
   }
@@ -386,12 +396,13 @@ export async function sendSequence(steps: SequenceStep[], timeoutMs = 60000): Pr
   while (Date.now() < deadline) {
     try {
       const response = await readJsonWithRetry<Record<string, unknown>>(responsePath, 2);
+      const responseWrittenAtMs = (await fs.stat(responsePath)).mtimeMs;
       if (String(response.id || "") !== id) throw new Error(`Bridge response command ID mismatch for ${id}`);
       if (String(response.launch_token || "") !== launchToken) throw new Error(`Bridge response launch token mismatch for ${id}`);
       await fs.unlink(responsePath).catch(() => undefined);
       if (response.ok === false) throw new Error(String(response.error || "Bridge rejected command"));
       const responseFrame = Number(response.frame || frameBefore);
-      const state = await stateAtOrAfter(launchToken, responseFrame);
+      const state = await stateAtOrAfter(launchToken, responseFrame, frameBefore, responseWrittenAtMs);
       return {
         ok: true,
         protocol: BRIDGE_PROTOCOL,
@@ -748,21 +759,42 @@ export interface DialogueResult { ok: boolean; lines_advanced: number; final_cho
 export async function advanceDialogue(choiceIndex?: number, maxAdvances = 30, timeoutMs = 30000): Promise<DialogueResult> {
   let state = await readState(); let message = objectValue(state.message);
   if (!message.busy) return { ok: false, lines_advanced: 0, final_choices: [], dialogue_ended: true, scene_after: sceneName(state), message: "no active dialogue" };
-  const started = Date.now(); let lines = 0;
+  const started = Date.now(); let lines = 0; let selectedChoice = false;
   for (; lines < maxAdvances; lines += 1) {
     const choices = Array.isArray(message.choices) ? message.choices.map(String) : [];
     if (choices.length) {
       if (choiceIndex === undefined) return { ok: true, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice required" };
-      if (choiceIndex >= choices.length) return { ok: false, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice index out of range" };
-      const steps: SequenceStep[] = []; if (choiceIndex > 0) steps.push({ action: "move_down", repeat: choiceIndex }); steps.push({ action: "confirm" }, { wait_frames: 8 });
-      await sendSequence(steps, Math.max(500, timeoutMs - (Date.now() - started))); state = await readState(); message = objectValue(state.message); lines += 1; break;
+      if (!Number.isInteger(choiceIndex) || choiceIndex < 0 || choiceIndex >= choices.length) return { ok: false, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice index out of range" };
+      const remaining = () => Math.max(500, timeoutMs - (Date.now() - started));
+      // $game_message exposes choices as soon as the interpreter queues them, but a
+      // preceding \! pause can keep Window_ChoiceList inactive until the text itself is
+      // confirmed. Advance only while no selectable window owns focus, then wait for the
+      // real choice cursor instead of treating declared choices as an open menu.
+      for (let reveal = 0; reveal < 8; reveal += 1) {
+        state = await readState(); message = objectValue(state.message);
+        const active = activeWindowOf(state);
+        if (active?.class === "Window_ChoiceList") break;
+        if (active) throw new Error(`Expected Window_ChoiceList but ${active.class} owns the input focus`);
+        const pendingChoices = Array.isArray(message.choices) ? message.choices : [];
+        if (!message.busy || pendingChoices.length === 0) throw new Error("The pending choice disappeared before its window opened");
+        await sendSequence([{ action: "confirm" }, { wait_frames: 8 }], remaining());
+      }
+      if (activeWindowOf(await readState())?.class !== "Window_ChoiceList") {
+        throw new Error("The choice window did not become active after advancing its preceding text");
+      }
+      // BLACK SOULS installs an anti-misclick script that intentionally opens every
+      // choice window at index -1. Blindly pressing confirm cannot select choice 0,
+      // and N down presses select N-1. Navigate against the observed cursor instead.
+      await selectWindowIndex(choiceIndex, remaining());
+      await sendSequence([{ action: "confirm" }, { wait_frames: 8 }], remaining());
+      state = await readState(); message = objectValue(state.message); selectedChoice = true; lines += 1; break;
     }
     await sendSequence([{ action: "confirm" }, { wait_frames: 8 }], Math.max(500, timeoutMs - (Date.now() - started)));
     state = await readState(); message = objectValue(state.message); if (!message.busy) { lines += 1; break; }
     if (Date.now() - started >= timeoutMs) break;
   }
   const finalChoices = Array.isArray(message.choices) ? message.choices.map(String) : [];
-  return { ok: true, lines_advanced: lines, final_choices: finalChoices, dialogue_ended: !message.busy, scene_after: sceneName(state), message: !message.busy ? "dialogue ended" : finalChoices.length ? "choice required" : "maximum advances reached" };
+  return { ok: true, lines_advanced: lines, final_choices: finalChoices, dialogue_ended: !message.busy, scene_after: sceneName(state), message: !message.busy ? "dialogue ended" : finalChoices.length ? "choice required" : selectedChoice ? "choice selected; dialogue continues" : "maximum advances reached" };
 }
 
 export async function buildSituation(): Promise<SituationSnapshot> {
@@ -922,8 +954,18 @@ export async function prepareBridgeRuntime(launchToken: string): Promise<{ archi
   if (!/^[a-zA-Z0-9_-]{16,100}$/.test(launchToken)) throw new Error("Invalid launch token");
   const runtime = runtimeDir();
   let archivedRuntime: string | null = null;
+  let frameRateOverride: string | null = null;
   try {
     await fs.access(runtime);
+    try {
+      const configured = (await fs.readFile(path.join(runtime, "frame_rate.txt"), "ascii")).trim();
+      const parsed = Number(configured);
+      if (/^\d{2,3}$/.test(configured) && Number.isInteger(parsed) && parsed >= 30 && parsed <= 120) {
+        frameRateOverride = `${parsed}\n`;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     const archiveRoot = path.join(installRoot(), "extract");
     await fs.mkdir(archiveRoot, { recursive: true });
     const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
@@ -934,6 +976,9 @@ export async function prepareBridgeRuntime(launchToken: string): Promise<{ archi
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await Promise.all([inboxDir(), outboxDir(), infoDir(), stateDir(), mapDir()].map((directory) => fs.mkdir(directory, { recursive: true })));
+  if (frameRateOverride !== null) {
+    await fs.writeFile(path.join(runtime, "frame_rate.txt"), frameRateOverride, { encoding: "ascii", flag: "wx" });
+  }
   const temp = `${launchTokenFile()}.tmp.${process.pid}`;
   await fs.writeFile(temp, `${launchToken}\n`, { encoding: "ascii", flag: "wx" });
   await retryFileOperation(() => fs.rename(temp, launchTokenFile()));

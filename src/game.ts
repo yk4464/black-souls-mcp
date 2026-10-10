@@ -68,7 +68,11 @@ export async function listSaves(): Promise<Array<Record<string, unknown>>> {
     .sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
   return Promise.all(saves.map(async (entry) => {
     const stat = await fs.stat(path.join(gameDir(), entry.name));
-    return { name: entry.name, slot: Number(entry.name.match(/\d+/)?.[0]), bytes: stat.size, modified: stat.mtime.toISOString() };
+    const displaySlot = Number(entry.name.match(/\d+/)?.[0]);
+    // save/load tool inputs are zero-indexed, so the machine-facing slot returned
+    // here must be directly reusable. Keep the filename's one-based number explicit
+    // for humans instead of silently mixing two incompatible numbering systems.
+    return { name: entry.name, slot: displaySlot - 1, display_slot: displaySlot, bytes: stat.size, modified: stat.mtime.toISOString() };
   }));
 }
 
@@ -84,6 +88,76 @@ Add-Type '[System.Runtime.InteropServices.DllImport("user32.dll")] public static
 if (-not [BlackSouls.Win]::ShowWindowAsync($process.MainWindowHandle, 6)) { exit 5 }
 `;
 const MINIMIZE_SCRIPT_BASE64 = Buffer.from(MINIMIZE_SCRIPT, "utf16le").toString("base64");
+
+type ProcessIdentity = "match" | "mismatch" | "missing" | "unknown";
+const PROCESS_IDENTITY_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$process = Get-Process -Id ([int]$env:BLACK_SOULS_PROCESS_PID) -ErrorAction SilentlyContinue
+if ($null -eq $process) { [Console]::Out.Write('missing'); exit 0 }
+try {
+  $expected = [IO.Path]::GetFullPath($env:BLACK_SOULS_EXPECTED_EXE)
+  $actual = [IO.Path]::GetFullPath($process.Path)
+  if ([StringComparer]::OrdinalIgnoreCase.Equals($expected, $actual)) {
+    [Console]::Out.Write('match')
+  } else {
+    [Console]::Out.Write('mismatch')
+  }
+} catch {
+  [Console]::Out.Write('unknown')
+}
+`;
+const PROCESS_IDENTITY_SCRIPT_BASE64 = Buffer.from(PROCESS_IDENTITY_SCRIPT, "utf16le").toString("base64");
+
+const TERMINATE_GAME_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$process = Get-Process -Id ([int]$env:BLACK_SOULS_PROCESS_PID) -ErrorAction SilentlyContinue
+if ($null -eq $process) { [Console]::Out.Write('missing'); exit 0 }
+try {
+  $expected = [IO.Path]::GetFullPath($env:BLACK_SOULS_EXPECTED_EXE)
+  $actual = [IO.Path]::GetFullPath($process.Path)
+  if (-not [StringComparer]::OrdinalIgnoreCase.Equals($expected, $actual)) {
+    [Console]::Out.Write('mismatch')
+    exit 0
+  }
+  $process.Kill()
+  if ($process.WaitForExit(5000)) { [Console]::Out.Write('killed') }
+  else { [Console]::Out.Write('still_alive') }
+} catch {
+  [Console]::Out.Write('unknown')
+}
+`;
+const TERMINATE_GAME_SCRIPT_BASE64 = Buffer.from(TERMINATE_GAME_SCRIPT, "utf16le").toString("base64");
+
+async function runWindowsProcessGuard(script: string, pid: number): Promise<string> {
+  const systemRoot = process.env.SystemRoot || String.raw`C:\Windows`;
+  const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const { stdout } = await execFileAsync(powershell, [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", script,
+  ], {
+    windowsHide: true,
+    timeout: 8000,
+    maxBuffer: 128 * 1024,
+    env: {
+      ...process.env,
+      BLACK_SOULS_PROCESS_PID: String(pid),
+      BLACK_SOULS_EXPECTED_EXE: gameExe(),
+    },
+  });
+  return stdout.trim();
+}
+
+async function inspectProcessIdentity(pid: number): Promise<ProcessIdentity> {
+  if (!isAlive(pid)) return "missing";
+  if (process.platform !== "win32") return "unknown";
+  try {
+    const result = await runWindowsProcessGuard(PROCESS_IDENTITY_SCRIPT_BASE64, pid);
+    return (["match", "mismatch", "missing", "unknown"] as const).includes(result as ProcessIdentity)
+      ? result as ProcessIdentity : "unknown";
+  } catch {
+    return isAlive(pid) ? "unknown" : "missing";
+  }
+}
 
 async function minimizeGameWindow(pid: number): Promise<boolean> {
   if (process.platform !== "win32") return false;
@@ -113,6 +187,13 @@ export async function launchGame(waitMs = 12000, minimizeWindow = true): Promise
   const existing = await bridgeStatus();
   if (existing.connected === true) {
     return { launched: false, already_running: true, pid: existing.pid, bridge: existing };
+  }
+  const existingPid = Number(existing.pid || 0);
+  if (existing.process_alive === true && Number.isInteger(existingPid) && existingPid > 0) {
+    const identity = await inspectProcessIdentity(existingPid);
+    if (identity !== "mismatch" && identity !== "missing") {
+      throw new Error(`Refusing to launch a second BLACK SOULS process while PID ${existingPid} is still alive (executable identity: ${identity}). Wait for the existing bridge to recover or terminate that exact game process first.`);
+    }
   }
 
   const launchToken = randomUUID().replaceAll("-", "");
@@ -190,9 +271,11 @@ export async function killGame(): Promise<KillResult> {
   const pid = await latestInfoPid();
   if (pid === null || !isAlive(pid)) return { ok: true, pid: pid && isAlive(pid) ? pid : null, signal: "none", message: "not running" };
   if (process.platform === "win32") {
-    try { await execFileAsync("taskkill.exe", ["/F", "/PID", String(pid)], { windowsHide: true, timeout: 5000 }); }
-    catch (error) { if (isAlive(pid)) throw error; }
-    return { ok: !isAlive(pid), pid, signal: "taskkill /F", message: isAlive(pid) ? "process still running" : "terminated" };
+    const result = await runWindowsProcessGuard(TERMINATE_GAME_SCRIPT_BASE64, pid).catch(() => isAlive(pid) ? "unknown" : "missing");
+    if (result === "mismatch") throw new Error(`Refusing to terminate PID ${pid}: its executable does not match ${gameExe()}`);
+    if (result === "unknown") throw new Error(`Refusing to terminate PID ${pid}: its executable identity could not be verified as ${gameExe()}`);
+    const alive = isAlive(pid);
+    return { ok: !alive, pid, signal: result === "killed" ? "verified process kill" : "none", message: alive ? "process still running" : "terminated" };
   }
   try { process.kill(pid, "SIGTERM"); } catch (error) { if (isAlive(pid)) throw error; }
   const deadline = Date.now() + 2000;
