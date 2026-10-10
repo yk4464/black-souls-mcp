@@ -109,7 +109,7 @@ export async function interact(eventId?: number, timeoutMs = 20000): Promise<Int
     const player = pointFrom(state.player);
     const events = (Array.isArray(map.events) ? map.events : []).map(objectValue);
     let event = events.find((item) => Number(item.id) === selectedId) || null;
-    if (!event) return { ok: attempt > 0, event_id: selectedId, event_name: selectedName, navigated, message_after: null, choices_after: [], scene_after: sceneFrom(state), message: attempt > 0 ? "event disappeared after interaction" : "event not found" };
+    if (!event) return { ok: false, event_id: selectedId, event_name: selectedName, navigated, message_after: null, choices_after: [], scene_after: sceneFrom(state), message: "event no longer visible; interaction not verified" };
     const target = { x: Number(event.x), y: Number(event.y) }; const tiles = tilesFrom(map); const blocked = blockedEventsFrom(map, player);
     const sameTile = Number(event.priority_type) !== 1 && key(target) === key(player)
       ? [{ point: player, path: [] as Action[] }]
@@ -131,7 +131,7 @@ export async function interact(eventId?: number, timeoutMs = 20000): Promise<Int
     const settledPlayer = pointFrom(state.player);
     const freshEvents = (Array.isArray(map.events) ? map.events : []).map(objectValue);
     event = freshEvents.find((item) => Number(item.id) === selectedId) || null;
-    if (!event) return { ok: true, event_id: selectedId, event_name: selectedName, navigated, message_after: null, choices_after: [], scene_after: sceneFrom(state), message: "event disappeared while approaching" };
+    if (!event) return { ok: false, event_id: selectedId, event_name: selectedName, navigated, message_after: null, choices_after: [], scene_after: sceneFrom(state), message: "event disappeared while approaching; interaction not verified" };
     const dx = Number(event.x) - settledPlayer.x; const dy = Number(event.y) - settledPlayer.y;
     const same = dx === 0 && dy === 0 && Number(event.priority_type) !== 1;
     const face = directions.find((direction) => direction.dx === dx && direction.dy === dy)?.action;
@@ -144,7 +144,7 @@ export async function interact(eventId?: number, timeoutMs = 20000): Promise<Int
     const afterEvent = afterEvents.find((item) => Number(item.id) === selectedId) || null;
     const reacted = message.busy === true || (Array.isArray(message.choices) && message.choices.length > 0)
       || battle.active === true || sceneFrom(after) !== sceneBefore || Number(objectValue(after.map).id || 0) !== mapBefore
-      || !afterEvent || afterEvent.erased === true || afterEvent.active_page !== pageBefore;
+      || (afterEvent !== null && (afterEvent.erased === true || afterEvent.active_page !== pageBefore));
     if (reacted) return { ok: true, event_id: selectedId, event_name: selectedName, navigated,
       message_after: typeof message.text === "string" && message.text ? message.text : null,
       choices_after: Array.isArray(message.choices) ? message.choices.map(String) : [], scene_after: sceneFrom(after), message: "interaction produced an observable game response" };

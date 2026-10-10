@@ -267,6 +267,54 @@ try {
   assert.equal(choiceResult.lines_advanced, 1);
   await Promise.all([choiceState, openedChoiceState, selectedChoiceState, completedChoiceState].map((file) => fs.unlink(file)));
 
+  // 模拟移动事件离开快照范围，区分目标丢失与真实对话响应。
+  for (const scenario of ["approach-disappeared", "confirm-disappeared", "dialogue"]) {
+    const eventX = scenario === "approach-disappeared" ? 2 : 1;
+    const event = { id: 7, name: "移动 NPC", x: eventX, y: 0, priority_type: 1, through: false, active_page: 1 };
+    const fieldState = {
+      ...base, frame: 700, updated_at: now(), scene: { name: "Scene_Map", windows: [] },
+      player: { x: 0, y: 0 }, map: { id: 104 }, message: { busy: false, choices: [] }, battle: { active: false },
+    };
+    const fieldMap = {
+      ...base, available: true, map_id: 104, radius: 6, center: { x: 0, y: 0 }, events: [event],
+      tiles: [0, 1, 2].map((x) => ({ x, y: 0, passable: { left: x > 0, right: x < 2, up: false, down: false } })),
+    };
+    const stateFile = await writeJson(path.join(runtime, "state"), "state-interaction.json", fieldState);
+    const mapFile = await writeJson(path.join(runtime, "map"), "map-interaction.json", fieldMap);
+    const response = (async () => {
+      const inbox = path.join(runtime, "inbox");
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const file = (await fs.readdir(inbox).catch(() => [])).find((name) => name.endsWith(".cmd"));
+        if (!file) { await new Promise((resolve) => setTimeout(resolve, 10)); continue; }
+        const command = await fs.readFile(path.join(inbox, file), "ascii");
+        const id = command.match(/^id=(.+)$/m)?.[1]?.trim();
+        assert.ok(id);
+        if (scenario === "approach-disappeared") {
+          assert.doesNotMatch(command, /confirm:/, "接近目标时尚未发送确认");
+        } else {
+          assert.match(command, /confirm:/, "相邻目标应收到确认输入");
+        }
+        await fs.unlink(path.join(inbox, file));
+        await writeJson(path.join(runtime, "state"), "state-interaction.json", {
+          ...fieldState, frame: 701, updated_at: now(),
+          player: { x: scenario === "approach-disappeared" ? 1 : 0, y: 0 },
+          message: scenario === "dialogue" ? { busy: true, text: "你好", choices: [] } : fieldState.message,
+        });
+        await writeJson(path.join(runtime, "map"), "map-interaction.json", {
+          ...fieldMap, events: scenario === "dialogue" ? [event] : [],
+        });
+        await writeJson(path.join(runtime, "outbox"), `${id}.json`, { id, launch_token: token, ok: true, frame: 701 });
+        return;
+      }
+      throw new Error("交互测试没有收到输入指令");
+    })();
+    const [interaction] = await Promise.all([interact(7, 3000), response]);
+    assert.equal(interaction.ok, scenario === "dialogue", `${scenario} 不应把目标丢失当成交互成功`);
+    if (scenario === "dialogue") assert.equal(interaction.message_after, "你好");
+    await Promise.all([fs.unlink(stateFile), fs.unlink(mapFile)]);
+  }
+
   await fs.writeFile(path.join(runtime, "state", "state-corrupt.json"), "{broken", "utf8");
   const future = new Date(Date.now() + 1000);
   await fs.utimes(path.join(runtime, "state", "state-corrupt.json"), future, future);

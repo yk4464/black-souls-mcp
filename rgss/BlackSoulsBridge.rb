@@ -66,7 +66,7 @@ module Input
 end
 
 module BlackSoulsBridge
-  VERSION = "1.10.0"
+  VERSION = "1.10.2"
   PROTOCOL = "black-souls-bridge/1"
   ROOT = "BridgeRuntime"
   INBOX = ROOT + "/inbox"
