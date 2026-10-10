@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.1 - 2026-10-11
+
+依赖安全修复：CI 中的 `npm audit --audit-level=high` 此前会因传递依赖漏洞而失败，main 分支长期处于红色状态。本次更新在不改变工具行为的前提下把审计清到 0 条。
+
+- 升级 `@modelcontextprotocol/sdk` 1.29.0 -> 1.32.1，修复 OAuth 客户端可能把凭据发往由 MCP 服务器指定的授权服务器的问题（GHSA-6qxp-vccf-f47h）。
+- 通过 `overrides` 固定六条传递依赖：`fast-uri` ^3.1.8、`hono` ^4.13.13、`ip-address` ^10.7.3、`proxy-addr` ^2.0.8、`qs` ^6.16.0，并保留原有 `@hono/node-server` 覆盖。修复内容涵盖 host confusion / SSRF、ReDoS、XSS、IP 欺骗与内存耗尽等告警。
+- `npm audit --audit-level=high` 现在退出码为 0，CI 的 "Reject high-severity dependency findings" 步骤恢复通过。
+- 无工具、协议或输出结构变更；`npm run check` 与 `npm pack --dry-run` 均通过。
+
 ## 1.10.0 - 2026-07-26
 
 根据一次完整的真机试玩反馈（11 项问题）修复，全部改动已在真实游戏的 boss 战中复验。
