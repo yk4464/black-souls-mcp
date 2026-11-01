@@ -8,7 +8,7 @@ import { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, 
 import { interact, navigate } from "./navigation.js";
 import { battleAction } from "./battle.js";
 
-const SERVER_VERSION = "1.10.3";
+const SERVER_VERSION = "1.10.4";
 const server = new McpServer({ name: "black-souls-mcp", version: SERVER_VERSION });
 const outputSchema = { data: z.unknown() };
 const result = (value: unknown) => ({
@@ -147,7 +147,7 @@ server.registerTool("black_souls_scratchpad_read", {
 }, async () => execute(() => readScratchpad()));
 server.registerTool("black_souls_scratchpad_write", {
   description: "Update notes, flags, or recent actions in the session scratchpad.",
-  inputSchema: { notes: z.string().max(8000).optional(), flags: z.record(z.boolean()).optional(), append_action: z.object({ frame: z.number().int(), action: z.string().max(200), result: z.string().max(200) }).optional() }, outputSchema,
+  inputSchema: { notes: z.string().max(8000).optional(), flags: z.record(z.string(), z.boolean()).optional(), append_action: z.object({ frame: z.number().int(), action: z.string().max(200), result: z.string().max(200) }).optional() }, outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async (args) => execute(() => writeScratchpad(args)));
 server.registerTool("black_souls_memory_read", {

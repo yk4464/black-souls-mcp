@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.4 - 2026-11-01
+
+依赖安全修复：`npm audit --audit-level=high` 因新公布的 zod 与 body-parser 公告失败，main 的 CI 变红。本次把审计清到 0 条，工具名、输入边界和响应封装不变。
+
+- `zod` 3.25.76 -> 4.6.7（GHSA-mrhx-c7xc-m3w5，受约束集合校验可耗尽内存；3.x 无修复版本）。`z.record` 按 zod 4 要求显式声明字符串键。
+- `@modelcontextprotocol/sdk` 1.32.1 -> 1.32.2，传递依赖 `body-parser` 随之升至 2.4.0；`overrides` 提升 `@hono/node-server` ^2.1.5、`fast-uri` ^3.1.9、`ip-address` ^10.7.5、`qs` ^6.17.1。
+- zod 4 生成的 `tools/list` JSON Schema 有等价差异：`outputSchema` 显式列出 `required: ["data"]`；输入对象不再带 `additionalProperties: false`（多余键仍被忽略，与此前运行时行为一致）；`black_souls_wait` 的 `condition` 由 `anyOf` 变为 `oneOf`；无上限整数补上安全整数边界。校验错误的措辞随 zod 4 改变。
+
 ## 1.10.3 - 2026-10-25
 
 经三轮审查（人工逐行、多代理扫描与对抗验证、引擎源码级复核）确认的问题修复；无工具增删与协议变更。
