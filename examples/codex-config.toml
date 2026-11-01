@@ -7,6 +7,9 @@ startup_timeout_sec = 20
 
 [mcp_servers.black_souls.env]
 BLACK_SOULS_ROOT = "C:/path/to/black-souls-mcp/runtime"
+BLACK_SOULS_GAME = "bs1"
 BLACK_SOULS_DIR = "C:/path/to/black-souls-mcp/runtime/game"
+BLACK_SOULS2_DIR = "C:/path/to/black-souls-mcp/runtime/game2"
 # Replace this with: (Get-FileHash -Algorithm SHA256 -LiteralPath '.../Game.exe').Hash
 BLACK_SOULS_GAME_EXE_SHA256 = "YOUR_GAME_EXE_SHA256"
+BLACK_SOULS2_GAME_EXE_SHA256 = "YOUR_BS2_GAME_EXE_SHA256"

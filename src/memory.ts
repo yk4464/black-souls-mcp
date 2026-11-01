@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { installRoot } from "./config.js";
+import { memoryDir } from "./config.js";
 
 export interface Scratchpad {
   session_id: string; updated_at: number; notes: string;
@@ -23,11 +23,12 @@ export interface SessionLogEntry {
   event_type: "action" | "observation" | "error" | "milestone" | "decision"; summary: string;
 }
 
-const directory = () => path.join(installRoot(), "memory");
+const directory = () => memoryDir();
 const file = (name: string) => path.join(directory(), name);
 const now = () => Date.now();
 let writeQueue: Promise<void> = Promise.resolve();
 let sessionLogLineCount: number | null = null;
+let sessionLogCountDir: string | null = null;
 let fallbackSessionId: string | null = null;
 
 async function readJson<T>(name: string, fallback: () => T): Promise<T> {
@@ -184,7 +185,9 @@ export async function setActiveGoal(id: string | null): Promise<GoalStack> {
 
 export async function appendSessionLog(entry: Omit<SessionLogEntry, "timestamp" | "session_id"> & { session_id?: string }): Promise<{ appended: true }> {
   return serialize(async () => {
-    await fs.mkdir(directory(), { recursive: true });
+    const currentDir = directory();
+    if (sessionLogCountDir !== currentDir) { sessionLogLineCount = null; fallbackSessionId = null; sessionLogCountDir = currentDir; }
+    await fs.mkdir(currentDir, { recursive: true });
     let sessionId = entry.session_id;
     if (!sessionId) {
       const scratchpadExists = await fs.access(file("scratchpad.json")).then(() => true, () => false);

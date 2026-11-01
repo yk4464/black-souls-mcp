@@ -4,14 +4,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { bridgeRuntimeDirectory, bridgeStatus, prepareBridgeRuntime } from "./bridge.js";
-import { gameDir, gameExe } from "./config.js";
+import { GAME_IDS, GAME_PROFILES, activeGame, expectedExeSha256, gameDir, gameExe, gameProfile, setActiveGame, type GameId } from "./config.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const execFileAsync = promisify(execFile);
-export const KNOWN_GAME_EXE_SHA256 = "E4447454C551B96C833E7ED4C7114F807C86FE32F0757C206BEDDA94AC85BC2B";
-export const EXPECTED_GAME_EXE_SHA256 = (
-  process.env.BLACK_SOULS_GAME_EXE_SHA256 ?? KNOWN_GAME_EXE_SHA256
-).trim().toUpperCase();
 
 async function stopLaunchedProcess(child: ReturnType<typeof spawn>): Promise<void> {
   if (child.exitCode === null && child.signalCode === null) {
@@ -30,6 +26,7 @@ async function sha256(file: string): Promise<string> {
 }
 
 export async function getGameInfo(): Promise<Record<string, unknown>> {
+  const expected = expectedExeSha256();
   const required = ["Game.exe", "Game.ini", "Data/Scripts.rvdata2", "Game.rgss3a~"];
   const files = await Promise.all(required.map(async (name) => {
     const fullPath = path.join(gameDir(), ...name.split("/"));
@@ -42,7 +39,7 @@ export async function getGameInfo(): Promise<Record<string, unknown>> {
         bytes: stat.size,
         ...(hash ? {
           sha256: hash,
-          integrity_ok: EXPECTED_GAME_EXE_SHA256 ? hash === EXPECTED_GAME_EXE_SHA256 : null,
+          integrity_ok: expected ? hash === expected : null,
         } : {}),
       };
     } catch { return { name, exists: false }; }
@@ -51,13 +48,14 @@ export async function getGameInfo(): Promise<Record<string, unknown>> {
   try { version = (await fs.readFile(path.join(gameDir(), "ver.txt"), "utf8")).trim(); } catch { /* optional */ }
   const executable = files.find((entry) => entry.name === "Game.exe") as { integrity_ok?: boolean } | undefined;
   return {
-    game: "BLACK SOULS",
+    game: gameProfile().title,
+    game_id: activeGame(),
     edition: "MCP",
     engine: "RPG Maker VX Ace / RGSS3",
     directory: gameDir(),
     version,
-    executable_integrity_ok: EXPECTED_GAME_EXE_SHA256 ? executable?.integrity_ok === true : null,
-    expected_game_exe_sha256: EXPECTED_GAME_EXE_SHA256 || null,
+    executable_integrity_ok: expected ? executable?.integrity_ok === true : null,
+    expected_game_exe_sha256: expected || null,
     files,
   };
 }
@@ -210,8 +208,9 @@ async function findGameProcessesByPath(): Promise<number[]> {
 export async function launchGame(waitMs = 12000, minimizeWindow = true): Promise<Record<string, unknown>> {
   await fs.access(gameExe());
   const executableHash = await sha256(gameExe());
-  if (EXPECTED_GAME_EXE_SHA256 && executableHash !== EXPECTED_GAME_EXE_SHA256) {
-    throw new Error(`Game.exe integrity check failed. Expected ${EXPECTED_GAME_EXE_SHA256}, found ${executableHash}. Restore the independent copy from the Steam original before launch.`);
+  const expected = expectedExeSha256();
+  if (expected && executableHash !== expected) {
+    throw new Error(`${gameProfile().title} Game.exe integrity check failed. Expected ${expected}, found ${executableHash}. Restore the independent copy from the Steam original before launch.`);
   }
 
   const existing = await bridgeStatus();
@@ -228,7 +227,7 @@ export async function launchGame(waitMs = 12000, minimizeWindow = true): Promise
   if (process.platform === "win32") {
     const runningGamePids = await findGameProcessesByPath().catch(() => [] as number[]);
     if (runningGamePids.length) {
-      throw new Error(`A BLACK SOULS process (pid ${runningGamePids.join(", ")}) is already running from ${gameExe()} but its bridge snapshots are missing or unreadable. Close that process first, or point BLACK_SOULS_DIR at its game directory; launching a second copy would give two games one runtime directory.`);
+      throw new Error(`A BLACK SOULS process (pid ${runningGamePids.join(", ")}) is already running from ${gameExe()} but its bridge snapshots are missing or unreadable. Close that process first, or point ${gameProfile().dirEnv} at its game directory; launching a second copy would give two games one runtime directory.`);
     }
   }
 
@@ -319,4 +318,38 @@ export async function killGame(): Promise<KillResult> {
   let signal = "SIGTERM";
   if (isAlive(pid)) { process.kill(pid, "SIGKILL"); signal = "SIGKILL"; }
   return { ok: !isAlive(pid), pid, signal, message: isAlive(pid) ? "process still running" : "terminated" };
+}
+
+async function gameIsRunning(): Promise<{ running: boolean; pid: number | null }> {
+  const status = await bridgeStatus();
+  const pid = Number(status.pid || 0);
+  if (status.connected === true || (status.process_alive === true && pid > 0)) return { running: true, pid: pid > 0 ? pid : null };
+  if (process.platform === "win32") {
+    // A crashed bridge leaves no readable snapshot but the process may still hold the copy.
+    const pids = await findGameProcessesByPath().catch(() => [] as number[]);
+    if (pids.length) return { running: true, pid: pids[0] };
+  }
+  return { running: false, pid: null };
+}
+
+export async function listGames(): Promise<Record<string, unknown>> {
+  const games = await Promise.all(GAME_IDS.map(async (id) => {
+    const profile = GAME_PROFILES[id];
+    const prepared = await fs.access(gameExe(id)).then(() => true, () => false);
+    return { id, title: profile.title, directory: gameDir(id), prepared, directory_env: profile.dirEnv, sha256_env: profile.hashEnv };
+  }));
+  return { active: activeGame(), games };
+}
+
+// Switching while a game runs would orphan it: every later tool call would look in the
+// other copy's BridgeRuntime, report "not running", and could launch a second process.
+export async function selectGame(id: GameId): Promise<Record<string, unknown>> {
+  const previous = activeGame();
+  if (id === previous) return { switched: false, ...(await listGames()) };
+  const current = await gameIsRunning();
+  if (current.running) {
+    throw new Error(`${gameProfile(previous).title} is still running${current.pid ? ` (pid ${current.pid})` : ""}. Save if needed, close it with black_souls_kill, then select ${GAME_PROFILES[id].title}.`);
+  }
+  setActiveGame(id);
+  return { switched: true, previous, ...(await listGames()) };
 }
