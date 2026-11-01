@@ -6,7 +6,7 @@
 
 一个同时支持 BLACK SOULS 和 BLACK SOULS II 的 MCP。让 Claude Code / Codex 这类 agent 直接接入用户选中的游戏。纯娱乐。
 
-原理很简单：读游戏内部对象拿状态，再把动作送进游戏自带的按键输入循环。不截图、不模拟鼠标、也不需要图片模型，所以非图像模型也能用。bs1 的寻路、对话、菜单和战斗曾实机校准；bs2 的战斗和对话新增兼容逻辑尚待实机复核。
+原理很简单：读游戏内部对象拿状态，再把动作送进游戏自带的按键输入循环。不截图、不模拟鼠标、也不需要图片模型，所以非图像模型也能用。bs1 的寻路、对话、菜单和战斗曾实机校准；bs2 已实测读档、存档、对话、寻路、交互，以及 ATB 战斗的胜利结算、逃跑和不可用选项拦截，战斗中使用道具和多次行动尚未实测。
 
 > [!IMPORTANT]
 > 本仓库只包含桥接程序与 MCP 源码，不包含、不下载、也不分发游戏本体、存档、素材、密钥或解包后的商业游戏数据。使用前请自行准备合法获得的游戏文件。
@@ -46,8 +46,8 @@
 | 状态读取 | `black_souls_get_state` · `black_souls_get_map` · `black_souls_situation` · `black_souls_get_full_map` · `black_souls_get_event` · `black_souls_get_scene_detail` | 场景、角色、消息、菜单、战斗；附近或大范围地图；事件页与触发条件；场景深层状态 |
 | 游戏数据 | `black_souls_get_variables` · `black_souls_get_switches` · `black_souls_get_inventory` · `black_souls_get_party_detail` | 变量、开关、背包物品与装备、队伍详细属性和技能 |
 | 输入 | `black_souls_input` · `black_souls_input_sequence` · `black_souls_wait` | 白名单键盘动作、多步连续动作、等待某个游戏条件成立 |
-| 高层动作 | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_options` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | 自动寻路与交互、按真实窗口列出当前可用指令和技能/道具/目标索引、提交一次战斗输入（不承诺整回合结算；魔法与换装备仅在游戏实际提供该指令时可用）、推进对话并选择选项、保存与读取；bs2 战斗尚待实机验证 |
-| AI 记忆 | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | 会话便签、长期游戏知识库、目标层级、持久会话日志，跨上下文重置保留 |
+| 高层动作 | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_options` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | 自动寻路与交互、按真实窗口列出当前可用指令和技能/道具/目标索引、提交一次战斗输入（不承诺整回合结算；魔法与换装备仅在游戏实际提供该指令时可用）、推进对话并选择选项、保存与读取 |
+| AI 记忆 | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | 会话便签、长期游戏知识库、目标层级、持久会话日志，跨上下文重置保留；bs1 / bs2 分别存放 |
 | 评测 | `black_souls_eval_status` | 供 `evals/runner.mjs` 检查评测场景的完成条件 |
 
 ## 工作原理
@@ -62,7 +62,7 @@ Node.js / TypeScript 服务
 BridgeRuntime
     │ RGSS3 Input 与游戏对象
     ▼
-使用者准备的 BLACK SOULS 独立副本
+使用者准备的 BLACK SOULS / BLACK SOULS II 独立副本
 ```
 
 桥接脚本每秒约更新 10 次状态；地图仅在位置或地图变化时生成新快照。命令由游戏主线程逐帧处理，不依赖窗口焦点，也不依赖视觉识别。查询类命令（变量、开关、背包、全图等）走同一条通道即时应答，不占用帧步进。
@@ -219,8 +219,8 @@ bs2 对应 `runtime/game2/Game.exe` 和 `BLACK_SOULS2_GAME_EXE_SHA256`。各自�
 | 变量 | 说明 |
 |---|---|
 | `BLACK_SOULS_ROOT` | 运行目录；默认 `<仓库>/runtime` |
-| `BLACK_SOULS_DIR` | 准备好的独立游戏目录 |
-| `BLACK_SOULS_GAME_EXE_SHA256` | 可选的 `Game.exe` 校验值 |
+| `BLACK_SOULS_DIR` | bs1 独立游戏目录，默认 `<运行目录>/game` |
+| `BLACK_SOULS_GAME_EXE_SHA256` | bs1 的 `Game.exe` 校验值 |
 | `BLACK_SOULS2_DIR` | bs2 独立游戏目录，默认 `<运行目录>/game2` |
 | `BLACK_SOULS2_GAME_EXE_SHA256` | bs2 的 `Game.exe` 校验值 |
 | `BLACK_SOULS_GAME` | 初始游戏 bs1 / bs2；持久选择文件优先 |

@@ -16,13 +16,14 @@ English contributors are welcome. Please open an issue if any part of the Chines
 
 ## 提交内容限制
 
-请勿提交游戏本体、解包数据、存档、截图中的个人信息、`BridgeRuntime`、日志、Codex 配置、访问令牌或依赖目录。提交问题复现时使用合成数据，并移除本机绝对路径。
+请勿提交游戏本体、解包数据、存档、截图中的个人信息、`BridgeRuntime`、日志、Codex 配置、访问令牌或依赖目录。`runtime/`（含 `game/`、`game2/`、`memory/`、`memory-bs2/` 和 `active_game.txt`）与 `evals/results/` 必须保持未跟踪。提交问题复现时使用合成数据，并移除本机绝对路径。
 
 ## 兼容性
 
 - Node.js 18+
 - Windows
 - RPG Maker VX Ace / RGSS3
+- BLACK SOULS（bs1）与 BLACK SOULS II（bs2）；两者的菜单和战斗布局不同，涉及战斗、菜单或对话的改动需说明在哪一部游戏上实测过
 
 桥接协议或工具输出结构发生变化时，请同步更新文档、测试和版本号。
 

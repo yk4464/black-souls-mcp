@@ -11,6 +11,10 @@
 // The built-in agent is a stub baseline: it advances dialogue, attacks in battle,
 // confirms on the title screen, and walks passable directions on the map. Replace
 // decideAction() to plug in a real model-driven agent.
+//
+// The runner plays whichever game is currently selected (black_souls_select_game) and
+// never switches games. The bundled scenarios use bs1 coordinates or placeholder
+// variable/switch IDs; adjust them to your own saves before running against bs2.
 
 import fs from "node:fs/promises";
 import path from "node:path";

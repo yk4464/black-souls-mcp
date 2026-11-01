@@ -78,9 +78,9 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 
 - **命令超时 ≠ 未执行**。`sendSequence` 超时后尝试删 inbox 文件：删成功 = 游戏没取走；删不掉 = 可能已执行。错误信息区分两种情况，重试前先读最新状态。
 - **`dist/` 是构建产物**，不要直接编辑；`unit.mjs` 从 `dist/*.js` 导入，改 `src/` 后必须先 build 再 test。
-- **`runtime/`、`memory/`、`evals/results/` 保持未跟踪**。绝不提交游戏文件、存档、`BridgeRuntime/`、日志或 token。
+- **`runtime/`（含 `game/`、`game2/`、`memory/`、`memory-bs2/`）、`evals/results/` 保持未跟踪**。绝不提交游戏文件、存档、`BridgeRuntime/`、日志或 token。
 - **按键注入只保持 1 帧**，`repeat:N` 展开为"按键、等 1 帧"交替。菜单光标每帧响应所以没问题；地图移动一格约需 16 帧（实测），连续 `repeat` 会被丢弃——地图上要用"单步 + `wait_frames:18`"的节奏。
-- 高层动作（save/load/battle）的菜单导航是**闭环**的：`selectCommandSymbol` / `selectSavefileSlot`（bridge.ts）每步回读真实光标。bs1 实测布局：主菜单 7 项（save 在符号 `save`）；战斗指令窗 6 项 attack/skill(特技)/skill(魔法)/guard/item/escape；敌人窗横向排列用左右键。改动后用 `scripts/probe_live.mjs` 各套件重新测绘并跑 `test:live`。bs2 只有一个 skill，且可能动态增加装备指令；技能、道具和敌人目标索引由真实窗口筛选，新增战斗/对话逻辑需实机复核。
+- 高层动作（save/load/battle）的菜单导航是**闭环**的：`selectCommandSymbol` / `selectSavefileSlot`（bridge.ts）每步回读真实光标。bs1 实测布局：主菜单 7 项（save 在符号 `save`）；战斗指令窗 6 项 attack/skill(特技)/skill(魔法)/guard/item/escape；敌人窗横向排列用左右键。改动后用 `scripts/probe_live.mjs` 各套件重新测绘并跑 `test:live`。bs2 只有一个 skill，且可能动态增加装备指令；技能、道具和敌人目标索引由真实窗口筛选，bs2 已实测胜利结算、逃跑、不可用选项拦截和就绪判断，战斗内用道具与多次行动未实测，改动这两条路径需实机复核。
 - **战斗回合演出期间引擎不处理 `Scene_Base#update`**（内部等待循环只跑 `Graphics.update`），所以桥接主心跳挂在 `Graphics.update` 上；`Scene_Base` 那条只是没有 Graphics 钩子时的退路。删掉 Graphics 钩子会让胜利结算、长演出、转场期间彻底失联。
 - **地图上的 `cancel` 会打开菜单**（RPG Maker 的 B 键语义），不是"退出"。想离开菜单才用 cancel；在地图上误发会把游戏带进 Scene_Menu，接着的方向键就变成菜单选择。
 - **不可用的选择只会响蜂鸣、光标原地不动**，引擎不会报错。命令/对话选项读取 `current_enabled`，战斗二级菜单确认后回读窗口是否离开；`battle_options` 的 `enabled` / `usable_now` 提前拦截。bs2 ATB 充能时 `BattleManager.actor` 可能为 nil，此时 `battle_options` 返回不可用而不是假装由第一个队员行动。

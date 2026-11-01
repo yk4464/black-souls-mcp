@@ -17,6 +17,6 @@
 
 ## Dependency note
 
-当前 MCP SDK 的间接依赖会让 `npm audit` 报告 `@hono/node-server` 的 Windows 静态文件路径问题。本项目只创建 `StdioServerTransport`，没有启用对应的 HTTP 静态文件服务。仓库保持官方 MCP SDK 版本，不使用 `npm audit fix --force` 强制降级；上游发布兼容修复后再正常更新锁文件。
+本项目只创建 MCP SDK 的 `StdioServerTransport`，不启用 SDK 附带的 HTTP 服务。`package.json` 的 `overrides` 用于把间接依赖提升到已修复版本，不使用 `npm audit fix --force` 降级官方 SDK。
 
-CI 使用 `npm audit --audit-level=high` 阻止高危或严重问题进入主分支；当前已知的中等级报告及其不适用原因保留在本节说明。
+CI 使用 `npm audit --audit-level=high` 阻止高危或严重问题进入主分支。

@@ -1,6 +1,6 @@
 # black-souls-mcp — Full Development Specification
 
-> **注意**：本文件是 1.1.x 时期的分阶段开发规格，其中“当前版本/当前工具数”等现状描述已过时；项目现状以 README、AGENTS.md 与源码为准。
+> **注意**：本文件是 1.1.x 时期（早于 BLACK SOULS II 支持）的分阶段开发规格，其中“当前版本/当前工具数”等现状描述已过时；项目现状以 README、AGENTS.md 与源码为准。
 >
 > **Execution target**: Codex / ChatGPT o3.  
 > **How to use**: Feed this file directly. Work through phases in order.

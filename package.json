@@ -3,7 +3,7 @@
   "version": "1.11.0",
   "private": true,
   "type": "module",
-  "description": "Local stdio MCP bridge for BLACK SOULS and RPG Maker VX Ace / RGSS3",
+  "description": "Local stdio MCP bridge for BLACK SOULS and BLACK SOULS II (RPG Maker VX Ace / RGSS3)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yk4464/black-souls-mcp.git"

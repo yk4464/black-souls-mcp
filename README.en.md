@@ -6,7 +6,7 @@
 
 A local MCP for BLACK SOULS and BLACK SOULS II. It lets Claude Code, Codex, and similar agents connect to the game you select. Purely for fun.
 
-Not screenshots, not OCR, not mouse simulation. It reads internal game objects and feeds actions into the native input loop, so a text-only model is enough. Navigation, dialogue, menus and battle were calibrated live for bs1; the new bs2 battle and dialogue paths still need live validation.
+Not screenshots, not OCR, not mouse simulation. It reads internal game objects and feeds actions into the native input loop, so a text-only model is enough. Navigation, dialogue, menus and battle were calibrated live for bs1. For bs2, loading, saving, dialogue, navigation, interaction, and ATB battle victory, escape and refusal of unavailable options have been tested live; using items in battle and multiple actions per turn have not.
 
 > [!IMPORTANT]
 > This repository contains only the bridge program and MCP source. It does not include, download, or distribute the game itself, saves, assets, keys, or unpacked commercial game data. Prepare your own legally obtained game files before use.
@@ -46,8 +46,8 @@ More accurate, faster, less likely to derail, and no multimodal model needed
 | State reading | `black_souls_get_state` · `black_souls_get_map` · `black_souls_situation` · `black_souls_get_full_map` · `black_souls_get_event` · `black_souls_get_scene_detail` | Scene, characters, messages, menus, battle; nearby or wide-range map; event pages and trigger conditions; deeper scene state |
 | Game data | `black_souls_get_variables` · `black_souls_get_switches` · `black_souls_get_inventory` · `black_souls_get_party_detail` | Variables, switches, inventory and equipment, detailed party stats and skills |
 | Input | `black_souls_input` · `black_souls_input_sequence` · `black_souls_wait` | Allowlisted keyboard actions, multi-step sequences, waiting for a game condition |
-| High-level actions | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_options` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | Navigate and interact; read real command, skill, item and target indices from the game windows; submit one battle input (not necessarily a completed turn; magic and equipment change only if offered); advance dialogue, save and load. bs2 battle behavior still needs live validation |
-| AI memory | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | Session scratchpad, long-term game knowledge, goal hierarchy, persistent session log — all survive context resets |
+| High-level actions | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_options` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | Navigate and interact; read real command, skill, item and target indices from the game windows; submit one battle input (not necessarily a completed turn; magic and equipment change only if offered); advance dialogue, save and load |
+| AI memory | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | Session scratchpad, long-term game knowledge, goal hierarchy, persistent session log — all survive context resets and are kept separately for bs1 / bs2 |
 | Evals | `black_souls_eval_status` | Scenario completion checks for `evals/runner.mjs` |
 
 ## How it works
@@ -62,7 +62,7 @@ Node.js / TypeScript service
 BridgeRuntime
     │ RGSS3 Input and game objects
     ▼
-Your prepared standalone BLACK SOULS copy
+Your prepared standalone BLACK SOULS / BLACK SOULS II copy
 ```
 
 The bridge script refreshes state roughly 10 times per second; a new map snapshot is generated only when the position or map changes. Commands are processed frame by frame by the game's main thread, independent of window focus and of visual recognition. Query commands (variables, switches, inventory, full map, and so on) travel the same channel and are answered instantly without frame stepping.
@@ -75,7 +75,7 @@ The bridge script refreshes state roughly 10 times per second; a new map snapsho
 | Transport | Local `stdio` |
 | Supported engine | RPG Maker VX Ace / RGSS3 |
 | Distribution | Install from source; no npm package published yet |
-| Game version | Ships one `Game.exe` fingerprint verified during development; other versions can be configured |
+| Game version | bs1 and bs2 each ship one built-in `Game.exe` fingerprint; other versions can be configured per game |
 
 ## Before you start
 
@@ -207,8 +207,8 @@ For bs2, use `runtime/game2/Game.exe` and `BLACK_SOULS2_GAME_EXE_SHA256`. An emp
 | Variable | Description |
 |---|---|
 | `BLACK_SOULS_ROOT` | Runtime directory; defaults to `<repo>/runtime` |
-| `BLACK_SOULS_DIR` | The prepared standalone game directory |
-| `BLACK_SOULS_GAME_EXE_SHA256` | Optional `Game.exe` checksum |
+| `BLACK_SOULS_DIR` | bs1 directory; defaults to `<runtime>/game` |
+| `BLACK_SOULS_GAME_EXE_SHA256` | bs1 `Game.exe` checksum |
 | `BLACK_SOULS2_DIR` | bs2 directory; defaults to `<runtime>/game2` |
 | `BLACK_SOULS2_GAME_EXE_SHA256` | bs2 `Game.exe` checksum |
 | `BLACK_SOULS_GAME` | Initial selection bs1 / bs2; persisted selection takes precedence |

@@ -1,6 +1,6 @@
 {
   "name": "basic_navigation",
-  "description": "From the loaded save position (map 21, 魔女之家 17,26), walk to the verified reachable tile (22,27). Adjust to your own save if it differs.",
+  "description": "bs1 only: from the loaded save position (map 21, 魔女之家 17,26), walk to the verified reachable tile (22,27). Adjust the coordinates to your own save, or to a bs2 save, if it differs.",
   "save_slot": 0,
   "max_turns": 60,
   "completion_conditions": [
