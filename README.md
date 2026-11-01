@@ -80,6 +80,25 @@
 
 ## 快速开始
 
+想让 AI agent 帮你安装，可以把下面这段话复制给它：
+
+```text
+请帮我在 Windows 上安装 black-souls-mcp：https://github.com/yk4464/black-souls-mcp
+先克隆仓库，完整阅读 README 的「快速开始」，再按它的步骤操作。要求：
+1. 检查 Node.js 18+ 和 Python 3.11+；缺少时告诉我，不要自行安装。
+2. 先问我用的是 BLACK SOULS（bs1）还是 BLACK SOULS II（bs2），以及原版游戏安装在哪个目录。
+3. 游戏必须来自我自己合法拥有的副本。不要下载游戏，也不要去别处找游戏文件。
+4. 把原版复制到 runtime/game（bs1）或 runtime/game2（bs2），之后只操作这个副本，绝不修改 Steam 原版目录。
+5. bs2 必须先把 Game.rgss3a 全量解包到副本目录，确认成功后才能改名为 Game.rgss3a~。
+6. 按 README 用 patch_rvdata2_binary.py 把桥接注入副本的 Data/Scripts.rvdata2，并保留备份。
+7. 运行 install.ps1 前先停下来问我：它会修改 ~/.codex/config.toml（会自动备份）。bs2 要加 -Game bs2。
+8. 如果我用的不是 Codex，就按我的 MCP 客户端自己的方式注册 dist/index.js 和 install.ps1 写入的那些环境变量。
+9. 装完运行 .\check.ps1 -IncludeRuntime（bs2 加 -Game bs2），把结果告诉我，并提醒我重启 MCP 客户端。
+任何一步失败或不确定时，停下来把原始错误给我看，不要绕过检查。
+```
+
+或者按下面的步骤手动安装。
+
 | | |
 |---|---|
 | 平台 | Windows 10/11 |

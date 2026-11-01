@@ -80,6 +80,25 @@ Input goes only through the game's own movement / event / menu / battle handling
 
 ## Quick start
 
+To have an AI agent install it for you, copy the prompt below and send it:
+
+```text
+Please install black-souls-mcp on my Windows machine: https://github.com/yk4464/black-souls-mcp
+Clone the repo, read the README "Quick start" section in full, then follow its steps. Rules:
+1. Check for Node.js 18+ and Python 3.11+. If either is missing, tell me instead of installing it yourself.
+2. Ask me first whether I use BLACK SOULS (bs1) or BLACK SOULS II (bs2), and where the original game is installed.
+3. The game must come from a copy I legally own. Do not download the game or look for game files anywhere else.
+4. Copy the original to runtime/game (bs1) or runtime/game2 (bs2) and only touch that copy. Never modify the Steam install directory.
+5. For bs2, fully unpack Game.rgss3a into the copy first; only after that succeeds may you rename it to Game.rgss3a~.
+6. Inject the bridge into the copy's Data/Scripts.rvdata2 with patch_rvdata2_binary.py as the README shows, keeping a backup.
+7. Stop and ask me before running install.ps1: it modifies ~/.codex/config.toml (with an automatic backup). Add -Game bs2 for bs2.
+8. If I use an MCP client other than Codex, register dist/index.js and the environment variables install.ps1 would write in that client's own way.
+9. When done, run .\check.ps1 -IncludeRuntime (add -Game bs2 for bs2), report the result, and remind me to restart my MCP client.
+If any step fails or you are unsure, stop and show me the raw error. Do not bypass checks.
+```
+
+Or install manually with the steps below.
+
 | | |
 |---|---|
 | Platform | Windows 10/11 |
