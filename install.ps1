@@ -58,6 +58,9 @@ $nodeToml = $node.Replace('\', '/')
 $serverToml = $server.Replace('\', '/')
 $rootToml = $RuntimeRoot.Replace('\', '/')
 $gameToml = $GameDir.Replace('\', '/')
+foreach ($value in @($nodeToml, $serverToml, $rootToml, $gameToml, $ExpectedGameExeHash)) {
+  if ($value -match '[\"\r\n]') { throw "Value cannot be embedded in a TOML string (contains a quote or newline): $value" }
+}
 $hashLine = "`r`nBLACK_SOULS_GAME_EXE_SHA256 = `"$ExpectedGameExeHash`""
 $block = @"
 $begin

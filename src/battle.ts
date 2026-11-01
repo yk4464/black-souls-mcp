@@ -11,7 +11,11 @@ export interface BattleActionResult {
 }
 
 const objectValue = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
-const turnOf = (battle: Record<string, unknown>): number | null => Number.isFinite(Number(battle.turn)) ? Number(battle.turn) : null;
+const turnOf = (battle: Record<string, unknown>): number | null => {
+  const value = battle.turn;
+  // JSON null (no troop yet) must not become turn 0 through Number(null) === 0.
+  return (typeof value === "number" || typeof value === "string") && Number.isFinite(Number(value)) ? Number(value) : null;
+};
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const enemiesOf = (state: Record<string, unknown>) => (Array.isArray(objectValue(state.battle).enemies) ? objectValue(state.battle).enemies as unknown[] : []).map(objectValue);
 
@@ -76,16 +80,24 @@ async function ensureActorCommandWindow(timeoutMs: number): Promise<boolean> {
 
 // Any failure mid-selection leaves the game inside a half-opened submenu, one confirm away
 // from spending the wrong skill or item. Always unwind back to the actor command window.
-async function rollbackToCommandWindow(timeoutMs: number): Promise<boolean> {
+// Returns whether the menu actually reached a safe window and whether the state could be
+// read at all: a failed read must not be reported as "rolled back".
+async function rollbackToCommandWindow(timeoutMs: number): Promise<{ unwound: boolean; known: boolean }> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const state = await readStateSafe();
-    if (!state || !objectValue(state.battle).active) return true;
+    if (!state) return { unwound: false, known: false };
+    if (!objectValue(state.battle).active) return { unwound: true, known: true };
     const window = activeWindowOf(state);
-    if (!window || window.class === "Window_ActorCommand" || window.class === "Window_PartyCommand") return true;
+    if (!window || window.class === "Window_ActorCommand" || window.class === "Window_PartyCommand") return { unwound: true, known: true };
+    if (window.class === "Window_ChoiceList") {
+      // Cancel on a choice window selects the choice's cancel branch — the rollback
+      // must not advance the story while cleaning up after an error.
+      return { unwound: false, known: true };
+    }
     await sendSequence([{ action: "cancel" }, { wait_frames: 10 }], Math.min(timeoutMs, 8000)).catch(() => undefined);
     await sleep(250);
   }
-  return false;
+  return { unwound: false, known: true };
 }
 
 // The engine stops servicing bridge commands inside its own wait loops, so a commit can
@@ -162,8 +174,13 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
   const roster = enemiesOf(before);
   const alive = roster.filter((enemy) => !enemy.dead && !enemy.hidden);
   const requested = roster[enemyIndex];
-  let targetSlot = alive.findIndex((enemy) => enemy === requested);
-  if (targetSlot < 0) targetSlot = enemyIndex < alive.length ? enemyIndex : 0;
+  if (!requested) throw new Error(`enemy_index ${enemyIndex} does not exist; the troop holds ${roster.length} entries (call black_souls_battle_options for living targets)`);
+  const targetSlot = alive.findIndex((enemy) => enemy === requested);
+  if (targetSlot < 0) {
+    // Silently retargeting would spend the turn on a different battler than the caller
+    // named. Refuse instead; the window lists only living enemies.
+    throw new Error(`enemy_index ${enemyIndex} ("${String(requested.name || "")}") is ${requested.hidden === true ? "hidden" : "already dead"} and has no entry in the target window; pick a living enemy`);
+  }
 
   try {
     const inputReady = await ensureActorCommandWindow(remaining());
@@ -194,12 +211,14 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
       await commitConfirm(remaining());
     }
   } catch (error) {
-    const unwound = await rollbackToCommandWindow(8000);
+    const rollback = await rollbackToCommandWindow(8000);
     const recovered = await readStateSafe();
     const stranded = String(activeWindowOf(recovered ?? {})?.class ?? "none");
-    const tail = unwound
+    const tail = rollback.unwound
       ? "the battle menu was rolled back to the command window; no action was committed by this call"
-      : `the battle menu could NOT be unwound and is still sitting on ${stranded} - do not send blind confirms, read state first`;
+      : rollback.known
+        ? `the battle menu could NOT be unwound and is still sitting on ${stranded} - do not send blind confirms, read state first`
+        : "the battle state could not be read during rollback, so the menu position is unknown - read state before sending any input";
     throw new Error(`${error instanceof Error ? error.message : String(error)} (${tail})`, { cause: error });
   }
 

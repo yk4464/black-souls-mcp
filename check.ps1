@@ -31,7 +31,11 @@ if ($IncludeRuntime) {
   $configRegistered = $false
   if (Test-Path -LiteralPath $CodexConfig) {
     $configText = [IO.File]::ReadAllText($CodexConfig)
-    $configRegistered = $configText.Contains('# BLACK_SOULS_MCP_BEGIN') -and $configText.Contains('# BLACK_SOULS_MCP_END')
+    # Same anchored matching as install/uninstall; substring matching would report a
+    # block as registered when uninstall could never actually remove it.
+    $beginCount = [regex]::Matches($configText, '(?m)^# BLACK_SOULS_MCP_BEGIN\r?$').Count
+    $endCount = [regex]::Matches($configText, '(?m)^# BLACK_SOULS_MCP_END\r?$').Count
+    $configRegistered = $beginCount -ge 1 -and $beginCount -eq $endCount
   }
 
   if (-not $actualGameExeHash) { $failures.Add('Game.exe is missing') }

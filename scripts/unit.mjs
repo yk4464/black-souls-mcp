@@ -12,9 +12,9 @@ const runtime = path.join(game, "BridgeRuntime");
 process.env.BLACK_SOULS_ROOT = root;
 process.env.BLACK_SOULS_DIR = game;
 
-const { ACTIONS, BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, sendQuery, sendSequence, triggerSave, waitForCondition } = await import("../dist/bridge.js");
+const { ACTIONS, BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, sendQuery, sendSequence, triggerLoad, triggerSave, waitForCondition } = await import("../dist/bridge.js");
 const { killGame, launchGame, listSaves } = await import("../dist/game.js");
-const { appendSessionLog, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } = await import("../dist/memory.js");
+const { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } = await import("../dist/memory.js");
 const { findPath, navigate, interact } = await import("../dist/navigation.js");
 const { allEnemiesDefeated, battleAction } = await import("../dist/battle.js");
 const token = "0123456789abcdef0123456789abcdef";
@@ -137,6 +137,25 @@ try {
   await answerNextQuery(optionsPayload);
   await assert.rejects(missing, /skill_index 7 does not exist/, "an out-of-range skill index must name the real list");
   await fs.unlink(battleState);
+  const corpseState = await writeJson(path.join(runtime, "state"), "state-corpse.json", {
+    ...base, frame: 135, updated_at: now(), scene: {
+      name: "Scene_Battle",
+      windows: [{ class: "Window_ActorCommand", active: true, index: 0, item_max: 4, col_max: 1, current_symbol: "attack" }],
+    },
+    player: { x: 1, y: 1 }, message: { busy: false, choices: [] },
+    party: { gold: 0, members: [{ name: "Hero", hp: 100, mhp: 100, mp: 30, mmp: 60, tp: 0 }] },
+    battle: { active: true, turn: 5, enemies: [{ name: "Slime", hp: 0, mhp: 50, dead: true }, { name: "Bat", hp: 30, mhp: 30, dead: false }] },
+  });
+  await assert.rejects(battleAction("attack", 0, 0, 0, 8000), /already dead/, "a dead enemy_index must be refused instead of silently retargeting");
+  await assert.rejects(battleAction("attack", 0, 0, 9, 8000), /enemy_index 9 does not exist/);
+  await fs.unlink(corpseState);
+  const noTurnState = await writeJson(path.join(runtime, "state"), "state-noturn.json", {
+    ...base, frame: 136, updated_at: now(), scene: { name: "Scene_Map" }, battle: { active: false, turn: null },
+  }, 3000);
+  const notInBattle = await battleAction("attack", 0, 0, 0, 8000);
+  assert.equal(notInBattle.ok, false);
+  assert.equal(notInBattle.turn_before, null, "a missing turn must not be reported as turn 0");
+  await fs.unlink(noTurnState);
   const evalState = await writeJson(path.join(runtime, "state"), "state-eval.json", {
     ...base, frame: 122, updated_at: now(), scene: { name: "Scene_Map" },
     player: { x: 5, y: 9 }, map: { id: 104 },
@@ -401,7 +420,61 @@ try {
   await writeJson(path.join(runtime, "info"), "info-menu.json", { ...base, launch_token: nextToken, capabilities: [] });
   await assert.rejects(() => navigate(5, 6), /needs the player on the map/i, "movement keys must never be sent from a menu");
   await assert.rejects(() => interact(5), /needs the player on the map/i, "interact must never be sent from a menu");
+  const unavailState = await writeJson(path.join(runtime, "state"), "state-unavail.json", {
+    ...base, launch_token: nextToken, frame: 402, updated_at: now(), scene: { name: "Scene_Map" }, player: { x: 5, y: 5 },
+  }, 3000);
+  await writeJson(path.join(runtime, "map"), "map-unavail.json", {
+    ...base, launch_token: nextToken, frame: 402, updated_at: now(), available: false,
+  }, 4000);
+  const unavailable = await navigate(5, 6);
+  assert.equal(unavailable.ok, false);
+  assert.match(unavailable.message, /map data is unavailable/, "a missing map snapshot must not be reported as an unpassable route");
+  await Promise.all([fs.unlink(unavailState), fs.unlink(path.join(runtime, "map", "map-unavail.json")).catch(() => undefined)]);
   await Promise.all([fs.unlink(menuState), fs.unlink(menuMap)]);
+
+  // triggerLoad from the in-game menu must verify the transition actually landed: an
+  // empty slot only buzzes, and the old code reported that as a completed load.
+  const loadStateFor = (scene) => async () => {
+    await writeJson(path.join(runtime, "state"), "state-loadflow.json", {
+      ...base, launch_token: nextToken, frame: 900, updated_at: now(), scene, player: { x: 5, y: 5 },
+    });
+  };
+  const respondToSequence = async (steps) => {
+    const inbox = path.join(runtime, "inbox");
+    const outbox = path.join(runtime, "outbox");
+    for (const step of steps) {
+      const deadline = Date.now() + 2000;
+      let name = null;
+      while (Date.now() < deadline) {
+        name = (await fs.readdir(inbox).catch(() => [])).find((entry) => entry.endsWith(".cmd"));
+        if (name) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(name, "expected a command file");
+      const command = await fs.readFile(path.join(inbox, name), "ascii");
+      const id = command.match(/^id=(.+)$/m)?.[1]?.trim();
+      assert.ok(id);
+      await fs.unlink(path.join(inbox, name));
+      await step.writeState();
+      await writeJson(outbox, `${id}.json`, { id, launch_token: nextToken, ok: true, frame: 900 });
+    }
+  };
+  const menuAt = (index, symbol) => ({ name: "Scene_Menu", windows: [{ class: "Window_MenuCommand", active: true, index, item_max: 2, col_max: 1, current_symbol: symbol }] });
+  const loadScene = { name: "Scene_Load", file_index: 0, windows: [] };
+  await writeJson(path.join(runtime, "state"), "state-loadflow.json", {
+    ...base, launch_token: nextToken, frame: 899, updated_at: now(), scene: { name: "Scene_Map" }, player: { x: 5, y: 5 },
+  });
+  const loadFlow = triggerLoad(0, 3000);
+  const loadResponder = respondToSequence([
+    { writeState: loadStateFor(menuAt(0, "save")) },
+    { writeState: loadStateFor(menuAt(1, "load")) },
+    { writeState: loadStateFor(loadScene) },
+    { writeState: loadStateFor(loadScene) },
+  ]);
+  const loadResult = await Promise.all([loadFlow, loadResponder]).then(([value]) => value);
+  assert.equal(loadResult.ok, false, "an in-game-menu load that never reaches Scene_Map must not report success");
+  assert.match(loadResult.message, /did not appear/);
+  await fs.unlink(path.join(runtime, "state", "state-loadflow.json")).catch(() => undefined);
   // Unreadable snapshots are not evidence the game died: while the recorded PID is alive the
   // report must stay a warning and must never tell the caller to relaunch or kill.
   const unreadableHealth = await bridgeHealth();
@@ -418,9 +491,38 @@ try {
   await writeJson(path.join(runtime, "state"), "state-health.json", { ...base, bridge_version: "1.7.0", launch_token: nextToken, frame: 10, updated_at: now(), scene: { name: "Scene_Map" }, message: { busy: false }, battle: { active: false }, player: { x: 1, y: 1, moving: false } });
   const stuckFile = path.join(runtime, "inbox", "stuck.cmd"); await fs.writeFile(stuckFile, "synthetic", "ascii");
   const old = new Date(Date.now() - 20000); await fs.utimes(stuckFile, old, old);
-  const stuckHealth = await bridgeHealth(); assert.ok(stuckHealth.issues.some((issue) => issue.code === "stuck_command" && issue.severity === "critical"));
+  const stuckHealth = await bridgeHealth(); assert.ok(stuckHealth.issues.some((issue) => issue.code === "stuck_command" && issue.severity === "warning"), "a connected bridge with queued commands is a wait, not a wedge");
+  assert.doesNotMatch(stuckHealth.recommended_action, /black_souls_kill/);
   assert.equal((await waitForCondition({ type: "message_clear" }, 100)).timed_out, false);
   assert.equal((await waitForCondition({ type: "scene", value: "Scene_Battle" }, 50, 10)).timed_out, true);
+
+  // Corrupt memory files must recover instead of bricking every memory tool and the
+  // session log, which reads the scratchpad on every append.
+  await fs.writeFile(path.join(root, "memory", "scratchpad.json"), "{corrupt", "utf8");
+  const recoveredPad = await readScratchpad();
+  assert.equal(typeof recoveredPad.session_id, "string");
+  await appendSessionLog({ event_type: "observation", summary: "after-corruption" });
+  assert.equal((await readSessionLog(1)).at(-1).summary, "after-corruption", "a corrupt scratchpad must not block the session log");
+  // Consecutive appends without a persisted scratchpad must share one session id.
+  await appendSessionLog({ event_type: "observation", summary: "sid-a" });
+  await appendSessionLog({ event_type: "observation", summary: "sid-b" });
+  const sidLogs = await readSessionLog(2);
+  assert.equal(sidLogs[0].session_id, sidLogs[1].session_id, "appends without a scratchpad must share a session id");
+
+  // "__proto__" must become a real own property: readable, deletable, non-polluting.
+  await writeMemory("map", "__proto__", "polluted", "certain", "unit test");
+  const protoBucket = await readMemory("map");
+  assert.equal(Object.prototype.hasOwnProperty.call(protoBucket, "__proto__"), true);
+  assert.equal(protoBucket.__proto__.value, "polluted");
+  assert.equal((await deleteMemory("map", "__proto__")).deleted, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(await readMemory("map"), "__proto__"), false);
+  await writeMemory("map", "clean-key", "v", "certain", "unit test");
+  assert.equal((await deleteMemory("map", "__proto__")).deleted, false, "a clean bucket must not report a phantom deletion via the prototype chain");
+
+  // Eviction must not delete the entry the current write just added.
+  for (let index = 0; index < 200; index += 1) await writeMemory("boss", `c-${index}`, `v-${index}`, "certain", "unit test");
+  await writeMemory("boss", "fresh", "kept", "uncertain", "unit test");
+  assert.ok((await readMemory("boss")).fresh, "a just-written uncertain entry must survive its own write's eviction");
 
   const truncated = await writeScratchpad({ notes: "x".repeat(9000) });
   assert.equal(truncated.notes.length, 8000);

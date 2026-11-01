@@ -54,6 +54,10 @@ function decideAction(situation) {
   if (situation.choices?.length) return { tool: "black_souls_advance_dialogue", args: { choice_index: 0 } };
   if (situation.warnings?.includes("dialogue active")) return { tool: "black_souls_advance_dialogue", args: {} };
   if (situation.battle_enemies?.some((enemy) => !enemy.dead)) return { tool: "black_souls_battle_action", args: { action: "attack" } };
+  if (situation.scene === "Scene_Menu") return { tool: "black_souls_input", args: { action: "cancel" } };
+  if (situation.scene === "Scene_Map" && !situation.warnings?.includes("dialogue active") && Number(situation.frame || 0) % 24 === 0) {
+    return { tool: "black_souls_input", args: { action: "open_menu" } };
+  }
   if (situation.scene === "Scene_Title") return { tool: "black_souls_input", args: { action: "confirm" } };
   const open = ["up", "down", "left", "right"].filter((direction) => situation.passable?.[direction]);
   if (open.length) {
@@ -85,13 +89,21 @@ try {
     const launch = await call("black_souls_launch", {});
     if (launch.isError) throw new Error(`launch failed: ${launch.data?.error?.message}`);
   }
+  const visitedScenes = new Set();
   if (Number.isInteger(scenario.save_slot)) {
     const load = await call("black_souls_load", { slot: scenario.save_slot });
     transcript.push({ turn: 0, tool: "black_souls_load", args: { slot: scenario.save_slot }, error: load.isError });
+    // triggerLoad reports soft failures as ok:false inside a successful envelope;
+    // treating them as loaded would evaluate the scenario from the wrong start state.
+    if (load.isError || load.data?.ok === false) {
+      failed = true;
+      failReason = "load_failed";
+    }
   }
 
-  for (turns = 1; turns <= maxTurns; turns += 1) {
+  for (turns = 1; turns <= maxTurns && !failed; turns += 1) {
     const situation = (await call("black_souls_situation", {})).data;
+    visitedScenes.add(situation?.scene ?? null);
     const decision = decideAction(situation);
     const outcome = await call(decision.tool, decision.args);
     transcript.push({ turn: turns, scene: situation?.scene ?? null, tool: decision.tool, args: decision.args, error: outcome.isError });
@@ -106,6 +118,11 @@ try {
     }
   }
   if (!completed && !failed) { failed = true; failReason = "turns_exceeded"; }
+  const requiredScenes = scenario.require_scenes_visited || [];
+  if (!failed && !requiredScenes.every((scene) => visitedScenes.has(scene))) {
+    failed = true;
+    failReason = "required_scene_not_visited";
+  }
 } catch (error) {
   failed = true;
   failReason = String(error);
@@ -119,11 +136,11 @@ const result = {
   started_at: startedAt,
   finished_at: Date.now(),
   max_turns: maxTurns,
-  turns_used: turns,
+  turns_used: Math.min(turns, maxTurns),
   completed,
   failed,
   fail_reason: failReason,
-  metrics: { turns_to_complete: completed ? turns : null },
+  metrics: { turns_to_complete: completed ? Math.min(turns, maxTurns) : null },
   transcript,
 };
 const resultsDir = path.join(evalsDir, "results");

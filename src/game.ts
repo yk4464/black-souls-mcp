@@ -177,6 +177,36 @@ async function minimizeGameWindow(pid: number): Promise<boolean> {
   } catch { return false; }
 }
 
+const FIND_GAME_BY_PATH_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$expected = [IO.Path]::GetFullPath($env:BLACK_SOULS_EXPECTED_EXE)
+$hits = @()
+foreach ($process in Get-Process) {
+  try {
+    if ($process.Path -and [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($process.Path), $expected)) { $hits += $process.Id }
+  } catch { }
+}
+[Console]::Out.Write(($hits -join ','))
+`;
+const FIND_GAME_BY_PATH_SCRIPT_BASE64 = Buffer.from(FIND_GAME_BY_PATH_SCRIPT, "utf16le").toString("base64");
+
+// The duplicate-launch guard normally keys off the info snapshots; when those are
+// missing or corrupt, only a real process scan can still see a live game.
+async function findGameProcessesByPath(): Promise<number[]> {
+  const systemRoot = process.env.SystemRoot || String.raw`C:\Windows`;
+  const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const { stdout } = await execFileAsync(powershell, [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", FIND_GAME_BY_PATH_SCRIPT_BASE64,
+  ], {
+    windowsHide: true,
+    timeout: 10000,
+    maxBuffer: 128 * 1024,
+    env: { ...process.env, BLACK_SOULS_EXPECTED_EXE: gameExe() },
+  });
+  return stdout.trim().split(",").map(Number).filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
 export async function launchGame(waitMs = 12000, minimizeWindow = true): Promise<Record<string, unknown>> {
   await fs.access(gameExe());
   const executableHash = await sha256(gameExe());
@@ -193,6 +223,12 @@ export async function launchGame(waitMs = 12000, minimizeWindow = true): Promise
     const identity = await inspectProcessIdentity(existingPid);
     if (identity !== "mismatch" && identity !== "missing") {
       throw new Error(`Refusing to launch a second BLACK SOULS process while PID ${existingPid} is still alive (executable identity: ${identity}). Wait for the existing bridge to recover or terminate that exact game process first.`);
+    }
+  }
+  if (process.platform === "win32") {
+    const runningGamePids = await findGameProcessesByPath().catch(() => [] as number[]);
+    if (runningGamePids.length) {
+      throw new Error(`A BLACK SOULS process (pid ${runningGamePids.join(", ")}) is already running from ${gameExe()} but its bridge snapshots are missing or unreadable. Close that process first, or point BLACK_SOULS_DIR at its game directory; launching a second copy would give two games one runtime directory.`);
     }
   }
 

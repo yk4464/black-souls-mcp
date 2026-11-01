@@ -79,6 +79,7 @@ try {
     clientInfo: { name: "smoke", version: "1" },
   });
   assert.equal(initialized.serverInfo.name, "black-souls-mcp");
+  assert.equal(initialized.protocolVersion, "2025-06-18");
   notify("notifications/initialized");
 
   const listed = await request("tools/list", {});

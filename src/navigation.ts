@@ -71,6 +71,9 @@ export async function navigate(targetX: number, targetY: number, timeoutMs = 300
   const [map, state] = await Promise.all([readMap(), readState()]);
   await requireFieldControl(state, "black_souls_navigate");
   const start = pointFrom(state.player); const target = { x: targetX, y: targetY };
+  if (map.available === false) {
+    return { ok: false, start, target, steps_taken: 0, final_position: start, reached: false, message: "map data is unavailable right now (no map snapshot); retry once the scene settles" };
+  }
   const radius = Math.min(6, Number(map.radius || 6));
   const path = findPath(tilesFrom(map), start, target, radius, blockedEventsFrom(map, start));
   if (path === null) return { ok: false, start, target, steps_taken: 0, final_position: start, reached: false, message: "target out of current map radius; move closer first" };
@@ -90,6 +93,9 @@ export async function interact(eventId?: number, timeoutMs = 20000): Promise<Int
   const started = Date.now(); const remaining = () => Math.max(2000, timeoutMs - (Date.now() - started));
   let [map, state] = await Promise.all([readMap(), readState()]);
   await requireFieldControl(state, "black_souls_interact");
+  if (map.available === false) {
+    return { ok: false, event_id: eventId ?? null, event_name: null, navigated: false, message_after: null, choices_after: [], scene_after: sceneFrom(state), message: "map data is unavailable right now (no map snapshot); retry once the scene settles" };
+  }
   const initialPlayer = pointFrom(state.player);
   const initialEvents = (Array.isArray(map.events) ? map.events : []).map(objectValue);
   let selected = eventId === undefined ? null : initialEvents.find((item) => Number(item.id) === eventId) || null;

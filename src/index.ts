@@ -2,13 +2,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { ACTIONS, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, queryArmors, queryFullParty, queryItems, querySwitches, queryVariables, queryWeapons, readMap, readState, sendAction, sendQuery, sendSequence, triggerLoad, triggerSave, waitForCondition } from "./bridge.js";
+import { ACTIONS, MAX_SEQUENCE_FRAMES, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, queryArmors, queryFullParty, queryItems, querySwitches, queryVariables, queryWeapons, readMap, readState, sendAction, sendQuery, sendSequence, triggerLoad, triggerSave, waitForCondition } from "./bridge.js";
 import { getGameInfo, killGame, launchGame, listSaves } from "./game.js";
 import { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } from "./memory.js";
 import { interact, navigate } from "./navigation.js";
 import { battleAction } from "./battle.js";
 
-const SERVER_VERSION = "1.10.2";
+const SERVER_VERSION = "1.10.3";
 const server = new McpServer({ name: "black-souls-mcp", version: SERVER_VERSION });
 const outputSchema = { data: z.unknown() };
 const result = (value: unknown) => ({
@@ -71,9 +71,18 @@ const stepSchema = z.union([
   z.object({ action: z.enum(ACTIONS), repeat: z.number().int().min(1).max(100).optional() }),
   z.object({ wait_frames: z.number().int().min(1).max(600) }),
 ]);
+// encodeSteps enforces the frame budget at execution time; mirroring it here rejects a
+// schema-valid-but-over-budget sequence at validation with the same message instead of
+// failing after the tool started working.
+const stepsSchema = z.array(stepSchema).min(1).max(200).superRefine((steps, ctx) => {
+  const budget = steps.reduce((total, step) => total + ("wait_frames" in step ? Math.trunc(step.wait_frames) : Math.trunc(step.repeat ?? 1) * 2 - 1), 0);
+  if (budget > MAX_SEQUENCE_FRAMES) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Sequence requires ${budget} frames; the maximum is ${MAX_SEQUENCE_FRAMES}` });
+  }
+});
 server.registerTool("black_souls_input_sequence", {
   description: "Inject up to 200 allowlisted inputs and frame waits as one ordered sequence. Composite dash directions hold the run modifier with movement; repeated text_skip mirrors holding Ctrl through dialogue or settlement text.",
-  inputSchema: { steps: z.array(stepSchema).min(1).max(200), timeout_ms: z.number().int().min(500).max(60000).optional() },
+  inputSchema: { steps: stepsSchema, timeout_ms: z.number().int().min(500).max(60000).optional() },
   outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async ({ steps, timeout_ms }) => execute(() => sendSequence(steps, timeout_ms)));

@@ -28,7 +28,7 @@ const HEARTBEAT_MAX_AGE_MS = 60000;
 // from "the game is alive but I could not read a file this instant".
 let lastKnownPid = 0;
 const MAX_PENDING_COMMANDS = 128;
-const MAX_SEQUENCE_FRAMES = 3600;
+export const MAX_SEQUENCE_FRAMES = 3600;
 const execFileAsync = promisify(execFile);
 const WINDOWS_WAKE_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -253,6 +253,7 @@ async function requireInputReadyStatus(): Promise<Record<string, unknown>> {
     && (status.connected !== true || !Number.isFinite(heartbeatAge) || heartbeatAge > HEARTBEAT_NUDGE_MS);
   if (process.platform === "win32" && wakeable) {
     const previousFrame = Number(status.frame || 0);
+    const wakeStartedAt = Date.now();
     // Long in-engine cutscenes (battle settlement, transitions) can hold the loop for a
     // while, so retry the wake instead of giving up after one nudge.
     const connectedBefore = status.connected === true;
@@ -278,7 +279,7 @@ async function requireInputReadyStatus(): Promise<Record<string, unknown>> {
       throw new Error(`BLACK SOULS PID ${pid} exited while the bridge was waiting for it; the game is gone, call black_souls_launch to restart`);
     }
     if (status.connected === true) return status;
-    throw new Error(`BLACK SOULS PID ${pid} is still running but published no new frame within 15s. The game is alive — it is most likely inside a long in-engine cutscene or waiting on a modal prompt. Read state again in a few seconds before assuming anything failed.`);
+    throw new Error(`BLACK SOULS PID ${pid} is still running but published no new frame within ${Math.round((Date.now() - wakeStartedAt) / 1000)}s. The game is alive — it is most likely inside a long in-engine cutscene or waiting on a modal prompt. Read state again in a few seconds before assuming anything failed.`);
   }
   if (status.connected !== true) throw statusFailure(status);
   return status;
@@ -306,6 +307,12 @@ export async function readMap(): Promise<Record<string, unknown>> {
   ensureSnapshotMatches(map, status, "Map");
   return map;
 }
+
+let commandSequence = 0;
+// Inbox pickup sorts by filename, so a time-ordered prefix keeps concurrent commands
+// executing in submission order instead of random-UUID order.
+const newCommandId = (): string =>
+  `${Date.now().toString(36)}${(commandSequence = (commandSequence + 1) % 1296).toString(36).padStart(2, "0")}${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 
 function encodeSteps(steps: SequenceStep[]): string {
   if (!steps.length || steps.length > 200) throw new Error("Sequence must contain 1 to 200 steps");
@@ -385,7 +392,7 @@ export async function sendSequence(steps: SequenceStep[], timeoutMs = 60000): Pr
   if (pendingCommands >= MAX_PENDING_COMMANDS) {
     throw new Error(`Bridge command queue is full (${pendingCommands}/${MAX_PENDING_COMMANDS}); wait for pending commands to finish`);
   }
-  const id = randomUUID().replaceAll("-", "");
+  const id = newCommandId();
   const finalPath = path.join(inboxDir(), `${id}.cmd`);
   const responsePath = path.join(outboxDir(), `${id}.json`);
   const payload = `id=${id}\ntoken=${launchToken}\nsteps=${encodeSteps(steps)}\n`;
@@ -396,7 +403,7 @@ export async function sendSequence(steps: SequenceStep[], timeoutMs = 60000): Pr
   while (Date.now() < deadline) {
     try {
       const response = await readJsonWithRetry<Record<string, unknown>>(responsePath, 2);
-      const responseWrittenAtMs = (await fs.stat(responsePath)).mtimeMs;
+      const responseWrittenAtMs = (await retryFileOperation(() => fs.stat(responsePath), 3)).mtimeMs;
       if (String(response.id || "") !== id) throw new Error(`Bridge response command ID mismatch for ${id}`);
       if (String(response.launch_token || "") !== launchToken) throw new Error(`Bridge response launch token mismatch for ${id}`);
       await fs.unlink(responsePath).catch(() => undefined);
@@ -422,31 +429,40 @@ export async function sendSequence(steps: SequenceStep[], timeoutMs = 60000): Pr
     await nudge();
     await sleep(16);
   }
-  let removedBeforePickup = false;
+  let removedBeforePickup: boolean | null = null;
   try {
     await fs.unlink(finalPath);
     removedBeforePickup = true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") removedBeforePickup = false;
+    // Any other error (EBUSY/EPERM while the bridge holds the file) leaves the answer
+    // unknown and must not mask the timeout with a raw filesystem error.
   }
   const current = await bridgeStatus();
-  const detail = current.connected === true ? "bridge remained connected" : `bridge disconnected: ${JSON.stringify(current.reasons || current.reason)}`;
-  const execution = removedBeforePickup
+  const relaunched = current.connected === true && String(current.launch_token || "") !== launchToken;
+  const detail = relaunched
+    ? "the bridge was relaunched while waiting (launch token changed); this command never reached the new game"
+    : current.connected === true ? "bridge remained connected" : `bridge disconnected: ${JSON.stringify(current.reasons || current.reason)}`;
+  const execution = removedBeforePickup === true
     ? "the pending file was removed before bridge pickup"
-    : "the bridge may already have consumed the command; inspect state before retrying";
+    : removedBeforePickup === false
+      ? "the bridge may already have consumed the command; inspect state before retrying"
+      : "it is unknown whether the bridge consumed the command; read the latest state before retrying";
   throw new Error(`Bridge command ${id} timed out after ${timeoutMs}ms (${detail}; ${execution})`);
 }
 
 export async function sendQuery(queryName: string, params = "", timeoutMs = 10000): Promise<unknown> {
   if (!/^[a-z_]{1,64}$/.test(queryName)) throw new Error("Invalid query name");
-  if (params.length > 1024 || /[\r\n]/.test(params)) throw new Error("Invalid query params");
+  // Commands travel as ASCII files; Node silently corrupts non-ASCII characters on
+  // write, so reject them instead of querying with mangled parameters.
+  if (params.length > 1024 || /[\r\n]/.test(params) || !/^[\x20-\x7e]*$/.test(params)) throw new Error("Invalid query params");
   const status = await requireInputReadyStatus();
   const launchToken = String(status.launch_token || "");
   await fs.mkdir(inboxDir(), { recursive: true });
   await fs.mkdir(outboxDir(), { recursive: true });
   const pendingCommands = (await fs.readdir(inboxDir())).filter((name) => name.endsWith(".cmd")).length;
   if (pendingCommands >= MAX_PENDING_COMMANDS) throw new Error(`Bridge command queue is full (${pendingCommands}/${MAX_PENDING_COMMANDS})`);
-  const id = randomUUID().replaceAll("-", "");
+  const id = newCommandId();
   const finalPath = path.join(inboxDir(), `${id}.cmd`);
   const responsePath = path.join(outboxDir(), `${id}.json`);
   await writeCommand(finalPath, `id=${id}\ntoken=${launchToken}\ntype=query\nquery=${queryName}\nparams=${params}\n`);
@@ -467,10 +483,15 @@ export async function sendQuery(queryName: string, params = "", timeoutMs = 1000
     await nudge();
     await sleep(16);
   }
-  let removedBeforePickup = false;
+  let removedBeforePickup: boolean | null = null;
   try { await fs.unlink(finalPath); removedBeforePickup = true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  throw new Error(`Bridge query ${id} timed out after ${timeoutMs}ms (${removedBeforePickup ? "removed before bridge pickup" : "bridge may have consumed query"})`);
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") removedBeforePickup = false; }
+  const current = await bridgeStatus();
+  const relaunched = current.connected === true && String(current.launch_token || "") !== launchToken;
+  const detail = relaunched
+    ? "the bridge was relaunched while waiting (launch token changed); this query never reached the new game"
+    : removedBeforePickup === true ? "removed before bridge pickup" : removedBeforePickup === false ? "bridge may have consumed query" : "unknown whether the bridge consumed the query";
+  throw new Error(`Bridge query ${id} timed out after ${timeoutMs}ms (${detail})`);
 }
 
 export async function queryVariables(ids: number[]): Promise<Record<string, unknown>> {
@@ -674,20 +695,31 @@ export async function triggerSave(slot: number, timeoutMs = 30000): Promise<Save
     await selectSavefileSlot(slot, timeoutMs);
     await sendSequence([{ action: "confirm" }, { wait_frames: 40 }], timeoutMs);
   } finally {
+    let unknownReads = 0;
     for (let backOut = 0; backOut < 4; backOut += 1) {
       const current = await readState().catch(() => null);
-      if (!current || sceneName(current) === "Scene_Map") break;
+      if (current && sceneName(current) === "Scene_Map") break;
+      if (!current) {
+        // A failed read is not "back on the map", but blindly cancelling from an
+        // unknown scene would open the menu on Scene_Map. Retry briefly, then stop.
+        unknownReads += 1;
+        if (unknownReads >= 3) break;
+        await sleep(300);
+        continue;
+      }
       await sendSequence([{ action: "cancel" }, { wait_frames: 12 }], timeoutMs).catch(() => undefined);
     }
   }
   const statAfter = await fs.stat(savefilePath(slot)).catch(() => null);
   const saved = Boolean(statAfter && (!statBefore || statAfter.mtimeMs > statBefore.mtimeMs));
-  const after = await readState();
+  const after = await readState().catch(() => null);
   return {
     ok: saved, slot, saved,
-    frame_before: Number(before.frame || 0), frame_after: Number(after.frame || 0),
-    scene_after: sceneName(after),
-    message: saved ? `save slot ${slot} was written and verified on disk` : "save inputs completed but the save file on disk did not change",
+    frame_before: Number(before.frame || 0), frame_after: Number(after?.frame || 0),
+    scene_after: sceneName(after ?? {}),
+    message: saved
+      ? (after ? `save slot ${slot} was written and verified on disk` : `save slot ${slot} was written and verified on disk; the follow-up state read failed, so scene_after is unknown`)
+      : "save inputs completed but the save file on disk did not change",
   };
 }
 
@@ -749,8 +781,14 @@ export async function triggerLoad(slot: number, timeoutMs = 30000): Promise<Load
     await sendSequence([{ action: "confirm" }, { wait_frames: 16 }], timeoutMs);
     await selectSavefileSlot(slot, timeoutMs);
     await sendSequence([{ action: "confirm" }, { wait_frames: 40 }], timeoutMs);
+    // The other branches verify the transition landed; this one must too, or an empty
+    // slot (buzzer, cursor unmoved) would be reported as a completed load.
+    const settled = await waitForCondition({ type: "scene", value: "Scene_Map" }, Math.min(timeoutMs, 15000));
     const after = await readState();
-    return { ok: true, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerPosition(after), message: "load completed from the in-game menu" };
+    return {
+      ok: settled.ok, slot, scene_before: beforeScene, scene_after: sceneName(after), player_after: playerPosition(after),
+      message: settled.ok ? "load completed from the in-game menu" : "load inputs were sent but Scene_Map did not appear in time; check that the slot held a save before retrying",
+    };
   }
   throw new Error(`Load is only available from Scene_Title, Scene_Load or Scene_Map (current: ${beforeScene || "unknown"})`);
 }
@@ -798,7 +836,10 @@ export async function advanceDialogue(choiceIndex?: number, maxAdvances = 30, ti
 }
 
 export async function buildSituation(): Promise<SituationSnapshot> {
-  const [state, mapResult] = await Promise.all([readState(), readMap().catch(() => ({}))]);
+  // Sequential on purpose: both reads go through the wake-capable status check, and
+  // running them concurrently makes a drowsy game spawn two PowerShell wake processes.
+  const state = await readState();
+  const mapResult = await readMap().catch(() => ({}));
   const map = objectValue(mapResult);
   const scene = sceneName(state);
   const playerRaw = objectValue(state.player);
@@ -884,12 +925,18 @@ export async function bridgeHealth(): Promise<HealthReport> {
   if (gameRunning && stateAge !== null && stateAge > 5000) issues.push({ code: "stale_state", severity: "warning", detail: `State snapshot is ${stateAge}ms old` });
   let state: Record<string, unknown> | null = null; try { state = await readStateSnapshot(String(status.launch_token || "") || undefined); } catch { /* unavailable */ }
   if (gameRunning && stateAge !== null && stateAge > 3000 && objectValue(state?.scene).name == null) issues.push({ code: "scene_transition", severity: "info", detail: "Scene name remains unavailable during transition" });
-  const stuck = inbox.filter((entry) => entry.age > 10000); if (stuck.length) issues.push({ code: "stuck_command", severity: "critical", detail: `${stuck.length} command file(s) have waited more than 10 seconds` });
+  const stuck = inbox.filter((entry) => entry.age > 10000);
+  if (stuck.length) {
+    // A connected bridge with queued commands is usually a drowsy game or a long
+    // sequence in flight, not a wedge; recommending a kill here sent playtesters to
+    // restart healthy games.
+    issues.push({ code: "stuck_command", severity: connected === true ? "warning" : "critical", detail: `${stuck.length} command file(s) have waited more than 10 seconds` });
+  }
   const orphaned = outbox.filter((entry) => entry.age > 60000); if (orphaned.length) issues.push({ code: "orphaned_response", severity: "warning", detail: `${orphaned.length} response file(s) are older than 60 seconds` });
   if (errorRecent) issues.push({ code: "error_log_recent", severity: "warning", detail: lastError || "Bridge error log changed recently" });
   if (!memoryOk) issues.push({ code: "memory_unwritable", severity: "critical", detail: "Persistent memory directory did not pass a write probe" });
   let recommended = "All systems nominal; proceed with gameplay";
-  if (issues.some((issue) => issue.code === "stuck_command")) recommended = "Call black_souls_kill then black_souls_launch to reset the bridge";
+  if (issues.some((issue) => issue.code === "stuck_command")) recommended = connected === true ? "Commands are still queued; read state and wait before sending more inputs" : "Call black_souls_kill then black_souls_launch to reset the bridge";
   else if (issues.some((issue) => issue.code === "game_not_running")) recommended = "Call black_souls_launch to start the game";
   else if (issues.some((issue) => issue.code === "bridge_unreadable")) recommended = "Wait a few seconds and read state again; do not kill the game, it is probably alive";
   else if (issues.some((issue) => issue.code === "stale_state")) recommended = "Wait 2 seconds and retry; bridge may be recovering from scene transition";
@@ -907,11 +954,13 @@ function conditionMet(condition: WaitCondition, initialFrame: number, state: Rec
   return Number(state.frame || 0) >= initialFrame + condition.frames;
 }
 export async function waitForCondition(condition: WaitCondition, timeoutMs = 15000, pollIntervalMs = 200): Promise<WaitResult> {
-  const started = Date.now(); let state = await readState(); const initialFrame = Number(state.frame || 0);
+  const started = Date.now();
+  let state = await readState().catch(() => null);
+  const initialFrame = Number(state?.frame || 0);
   while (true) {
-    if (conditionMet(condition, initialFrame, state)) return { ok: true, condition, elapsed_ms: Date.now() - started, final_scene: sceneName(state), timed_out: false };
-    if (Date.now() - started >= timeoutMs) return { ok: false, condition, elapsed_ms: Date.now() - started, final_scene: sceneName(state), timed_out: true };
-    await sleep(Math.min(pollIntervalMs, Math.max(1, timeoutMs - (Date.now() - started)))); state = await readState();
+    if (state && conditionMet(condition, initialFrame, state)) return { ok: true, condition, elapsed_ms: Date.now() - started, final_scene: sceneName(state), timed_out: false };
+    if (Date.now() - started >= timeoutMs) return { ok: false, condition, elapsed_ms: Date.now() - started, final_scene: sceneName(state ?? {}), timed_out: true };
+    await sleep(Math.min(pollIntervalMs, Math.max(1, timeoutMs - (Date.now() - started)))); state = await readState().catch(() => null);
   }
 }
 
@@ -950,6 +999,17 @@ export async function evalStatus(conditions: EvalCondition[]): Promise<EvalStatu
   return { ok: true, all_passed: results.every((entry) => entry.passed), results, frame: Number(state.frame || 0), scene };
 }
 
+// Stale archives keep the previous runtime's snapshots (and launch token) on disk for
+// diagnosis; without a cap, every relaunch would add one forever.
+async function pruneStaleArchives(archiveRoot: string): Promise<void> {
+  try {
+    const names = (await fs.readdir(archiveRoot)).filter((name) => name.startsWith("BridgeRuntime-stale-")).sort().reverse();
+    for (const name of names.slice(12)) {
+      await fs.rm(path.join(archiveRoot, name), { recursive: true, force: true }).catch(() => undefined);
+    }
+  } catch { /* best-effort housekeeping */ }
+}
+
 export async function prepareBridgeRuntime(launchToken: string): Promise<{ archived_runtime: string | null; runtime_directory: string }> {
   if (!/^[a-zA-Z0-9_-]{16,100}$/.test(launchToken)) throw new Error("Invalid launch token");
   const runtime = runtimeDir();
@@ -970,14 +1030,26 @@ export async function prepareBridgeRuntime(launchToken: string): Promise<{ archi
     await fs.mkdir(archiveRoot, { recursive: true });
     const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
     const destination = path.join(archiveRoot, `BridgeRuntime-stale-${stamp}-${randomUUID().slice(0, 8)}`);
-    await retryFileOperation(() => fs.rename(runtime, destination), 8);
+    try {
+      await retryFileOperation(() => fs.rename(runtime, destination), 8);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+      // gameDir and installRoot may sit on different volumes, where rename is impossible.
+      await fs.cp(runtime, destination, { recursive: true });
+      await fs.rm(runtime, { recursive: true, force: true });
+    }
     archivedRuntime = destination;
+    await pruneStaleArchives(archiveRoot);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await Promise.all([inboxDir(), outboxDir(), infoDir(), stateDir(), mapDir()].map((directory) => fs.mkdir(directory, { recursive: true })));
   if (frameRateOverride !== null) {
-    await fs.writeFile(path.join(runtime, "frame_rate.txt"), frameRateOverride, { encoding: "ascii", flag: "wx" });
+    // A second server instance launching concurrently recreates the same file with the
+    // same content, so EEXIST is harmless.
+    await fs.writeFile(path.join(runtime, "frame_rate.txt"), frameRateOverride, { encoding: "ascii", flag: "wx" }).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    });
   }
   const temp = `${launchTokenFile()}.tmp.${process.pid}`;
   await fs.writeFile(temp, `${launchToken}\n`, { encoding: "ascii", flag: "wx" });

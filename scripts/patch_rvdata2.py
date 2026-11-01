@@ -16,6 +16,21 @@ except ImportError as error:
     ) from error
 
 
+def entry_title(entry) -> str:
+    # rubymarshal returns an I-prefixed string as a RubyString object (whose str() is a
+    # repr, not the text) and a bare string token as raw bytes; neither survives a
+    # plain str() comparison against the title.
+    raw = getattr(entry[1], "text", entry[1])
+    if isinstance(raw, bytes):
+        for encoding in ("utf-8", "cp932", "latin1"):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                pass
+        return ""
+    return str(raw)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Replace one RGSS3 script in Scripts.rvdata2")
     parser.add_argument("archive", type=Path)
@@ -27,24 +42,44 @@ def main() -> int:
     archive = args.archive.resolve()
     source = args.script.read_bytes()
     objects = loads(archive.read_bytes())
-    matches = [entry for entry in objects if len(entry) == 3 and str(entry[1]) == args.title]
+    matches = [index for index, entry in enumerate(objects) if len(entry) == 3 and entry_title(entry) == args.title]
     if len(matches) != 1:
         raise RuntimeError(f"Expected exactly one {args.title!r} script, found {len(matches)}")
+    target_index = matches[0]
+
+    # Every RGSS3 script entry is zlib data. A blob that no longer decompresses means
+    # the marshal reader mangled non-UTF-8 bytes while parsing; rewriting the file now
+    # would corrupt that entry permanently.
+    untouched = [entry[2] for index, entry in enumerate(objects) if len(entry) == 3 and index != target_index]
+    untouched_by_index = {index: entry[2] for index, entry in enumerate(objects) if len(entry) == 3 and index != target_index}
+    for blob in untouched:
+        try:
+            zlib.decompress(blob)
+        except zlib.error as error:
+            raise RuntimeError(
+                "A script payload did not survive parsing (non-UTF-8 bytes in the archive); "
+                "use patch_rvdata2_binary.py, which patches bytes in place"
+            ) from error
 
     if args.backup and not args.backup.exists():
         args.backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(archive, args.backup)
 
-    matches[0][2] = zlib.compress(source, 9)
+    objects[target_index][2] = zlib.compress(source, 9)
     encoded = writes(objects)
     temp = archive.with_suffix(archive.suffix + ".tmp")
     temp.write_bytes(encoded)
 
     verification = loads(temp.read_bytes())
-    checked = [entry for entry in verification if len(entry) == 3 and str(entry[1]) == args.title]
-    if len(checked) != 1 or zlib.decompress(checked[0][2]) != source:
+    checked = [entry for entry in verification if len(entry) == 3]
+    expected = [objects[target_index][2] if index == target_index else untouched_by_index[index] for index in range(len(objects)) if len(objects[index]) == 3]
+    if (
+        len(checked) != len(objects)
+        or zlib.decompress(checked[target_index][2]) != source
+        or [entry[2] for entry in checked] != expected
+    ):
         temp.unlink(missing_ok=True)
-        raise RuntimeError("Round-trip verification failed")
+        raise RuntimeError("Round-trip verification failed; the archive was not modified (use patch_rvdata2_binary.py for byte-preserving patching)")
 
     os.replace(temp, archive)
     print(f"patched={archive}")

@@ -37,11 +37,19 @@ module Input
   end
 
   def self.press?(key)
+    @bsmcp_last_poll_frame = (Graphics.frame_count rescue nil)
     ((@bsmcp_active || {})[key].to_i > 0) || bsmcp_native_press(key)
   end
 
   def self.trigger?(key)
+    @bsmcp_last_poll_frame = (Graphics.frame_count rescue nil)
     !!((@bsmcp_triggered || {})[key]) || bsmcp_native_trigger(key)
+  end
+
+  # Last frame on which the engine queried real input state. The bridge uses this to
+  # tell "a scene is consuming input" from "the engine sits in an internal wait loop".
+  def self.bsmcp_last_poll_frame
+    @bsmcp_last_poll_frame
   end
 
   def self.repeat?(key)
@@ -66,7 +74,7 @@ module Input
 end
 
 module BlackSoulsBridge
-  VERSION = "1.10.2"
+  VERSION = "1.10.3"
   PROTOCOL = "black-souls-bridge/1"
   ROOT = "BridgeRuntime"
   INBOX = ROOT + "/inbox"
@@ -83,6 +91,10 @@ module BlackSoulsBridge
   MAX_QUEUE = 128
   MAX_SEQUENCE_STEPS = 200
   MAX_SEQUENCE_FRAMES = 3600
+  # Per-command bound on frames spent waiting for a scene to start consuming input
+  # again; past it the bridge falls back to injecting anyway so a detection regression
+  # can never wedge the command queue permanently.
+  STALL_FRAMES_BEFORE_FORCING = 240
   ALLOWED_ACTIONS = {
     "move_up" => :UP,
     "move_down" => :DOWN,
@@ -236,22 +248,26 @@ module BlackSoulsBridge
   def self.atomic_write(path, data)
     @write_sequence = @write_sequence.to_i + 1
     temp = path + ".tmp.#{process_id}.#{@write_sequence}"
-    File.open(temp, "wb") do |file|
-      file.write(data)
-      file.flush
-      file.fsync rescue nil
-    end
-    attempt = 0
     begin
-      File.rename(temp, path)
-    rescue Errno::EACCES, Errno::EPERM
-      # Retry twice immediately (no sleep) to handle transient AV locks without
-      # blocking the game's frame loop. On persistent failure the error propagates
-      # to BlackSoulsBridge.update's rescue and is logged; the next frame retries.
-      attempt += 1
-      retry if attempt < 3
-      raise
+      File.open(temp, "wb") do |file|
+        file.write(data)
+        file.flush
+        file.fsync rescue nil
+      end
+      attempt = 0
+      begin
+        File.rename(temp, path)
+      rescue Errno::EACCES, Errno::EPERM
+        # Retry twice immediately (no sleep) to handle transient AV locks without
+        # blocking the game's frame loop. On persistent failure the error propagates
+        # to BlackSoulsBridge.update's rescue and is logged; the next frame retries.
+        attempt += 1
+        retry if attempt < 3
+        raise
+      end
     ensure
+      # Covers the write phase too: a failure before rename must not leave .tmp
+      # orphan files behind (the sequence in the name keeps them unique per frame).
       begin
         File.delete(temp) if File.exist?(temp)
       rescue
@@ -291,7 +307,9 @@ module BlackSoulsBridge
   def self.append_error(error)
     signature = error.class.to_s + ": " + error.message.to_s
     frame = (Graphics.frame_count rescue 0)
-    return if @last_error == signature && frame - @last_error_frame.to_i < 600
+    # frame_count resets to 0 on new game / load; a negative difference is that reset,
+    # not a recent duplicate, so only throttle within the same frame era.
+    return if @last_error == signature && frame >= @last_error_frame.to_i && frame - @last_error_frame.to_i < 600
     @last_error = signature
     @last_error_frame = frame
     ensure_directory(ROOT)
@@ -385,23 +403,50 @@ module BlackSoulsBridge
         @queue << command
       rescue => error
         id = File.basename(path, ".cmd")
-        atomic_json(OUTBOX + "/" + id + ".json", {
-          "ok" => false,
-          "id" => id,
-          "error" => error.message,
-          "protocol" => PROTOCOL,
-          "bridge_version" => VERSION,
-          "pid" => process_id,
-          "launch_token" => @launch_token,
-          "frame" => Graphics.frame_count
-        })
-      ensure
-        begin
-          File.delete(path) if File.exist?(path)
-        rescue
+        # A duplicate id means the earlier copy parsed fine and is queued or already
+        # done; its real response is coming, and a second "rejected" answer would make
+        # the caller resend and execute the sequence twice. Stay silent for that case.
+        unless error.message.to_s == "duplicate command"
+          begin
+            atomic_json(OUTBOX + "/" + id + ".json", {
+              "ok" => false,
+              "id" => id,
+              "error" => error.message,
+              "protocol" => PROTOCOL,
+              "bridge_version" => VERSION,
+              "pid" => process_id,
+              "launch_token" => @launch_token,
+              "frame" => Graphics.frame_count
+            })
+          rescue => nested
+            append_error(nested)
+          end
         end
+      ensure
+        delete_command_file(path)
       end
     end
+  end
+
+  def self.engine_reading_input?
+    last = Input.bsmcp_last_poll_frame
+    return true if last.nil?
+    Graphics.frame_count - last <= 4
+  rescue
+    true
+  end
+
+  def self.delete_command_file(path)
+    attempt = 0
+    begin
+      File.delete(path) if File.exist?(path)
+    rescue Errno::EACCES, Errno::EPERM, Errno::EBUSY
+      attempt += 1
+      retry if attempt < 3
+      raise
+    end
+  rescue
+    # A persistent failure is retried by the next scan through the duplicate-id path.
   end
 
   def self.process_command
@@ -430,6 +475,16 @@ module BlackSoulsBridge
     end
     if @active["index"] < @active["steps"].length
       name, count = @active["steps"][@active["index"]]
+      if name != "wait" && !engine_reading_input?
+        # Inside the engine's internal wait loops (cutscenes, transitions, long
+        # animations) no scene polls Input, so a key injected now is dropped on the
+        # floor while the response still reports success. Hold the step until input
+        # is being consumed again; the bounded stall keeps a detection regression
+        # from wedging the queue permanently.
+        @active["stall"] = @active["stall"].to_i + 1
+        return if @active["stall"] <= STALL_FRAMES_BEFORE_FORCING
+      end
+      @active["stall"] = 0
       @active["index"] += 1
       if name == "wait"
         @active["wait"] = count - 1
@@ -950,12 +1005,27 @@ module BlackSoulsBridge
     }
   end
 
+  # TS removes a response as soon as it reads it; responses whose command already
+  # timed out on the TS side would otherwise sit in outbox forever and trip the
+  # orphaned-response health check on every subsequent run.
+  def self.cleanup_outbox
+    cutoff = Time.now - 600
+    Dir.glob(OUTBOX + "/*.json").each do |file|
+      begin
+        File.delete(file) if File.mtime(file) < cutoff
+      rescue
+      end
+    end
+  rescue
+  end
+
   def self.write_snapshots
     frame = Graphics.frame_count
     if frame % STATE_INTERVAL == 0
       snapshot_json(STATE_DIR, "state", state_hash)
       cleanup_snapshots(STATE_DIR, "state", 24) if frame % 120 == 0
     end
+    cleanup_outbox if frame % 600 == 0
     key = if map_ready? && $game_player
       events = safe_call($game_map, :events, {})
       values = events.respond_to?(:values) ? events.values : []

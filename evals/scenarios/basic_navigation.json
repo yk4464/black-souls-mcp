@@ -12,6 +12,6 @@
     { "type": "turns_exceeded" },
     { "type": "all_party_dead" }
   ],
-  "system_prompt_suffix": "Your goal is to walk the player to tile (16, 12) on the current map.",
+  "system_prompt_suffix": "Your goal is to walk the player to tile (22, 27) on the current map.",
   "metrics": ["turns_to_complete"]
 }

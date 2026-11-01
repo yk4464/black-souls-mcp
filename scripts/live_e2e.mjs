@@ -28,11 +28,18 @@ const call = async (name, args = {}) => {
 };
 const waitForScene = async (name, timeoutMs = 10000) => {
   const deadline = Date.now() + timeoutMs;
+  let unreadable = 0;
   while (Date.now() < deadline) {
     const status = await call("black_souls_status");
     if (status.bridge?.connected !== true) {
-      throw new Error(`Bridge disconnected while waiting for ${name}: ${JSON.stringify(status.bridge)}`);
+      // Snapshot reads fail transiently during rotation and scene transitions; the
+      // server itself reports that state as "unknown", not as a dead bridge.
+      unreadable += 1;
+      if (unreadable >= 10) throw new Error(`Bridge disconnected while waiting for ${name}: ${JSON.stringify(status.bridge)}`);
+      await sleep(100);
+      continue;
     }
+    unreadable = 0;
     const state = await call("black_souls_get_state");
     if (state.scene?.name === name) return state;
     await sleep(100);
