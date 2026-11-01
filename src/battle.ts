@@ -1,8 +1,6 @@
 import { activeWindowOf, readState, selectCommandSymbol, selectWindowIndex, sendQuery, sendSequence } from "./bridge.js";
 
-// Live-calibrated actor command layout (BLACK SOULS): attack / skill(特技) / skill(魔法)
-// / guard / item / escape. "magic" targets the second command whose symbol is "skill".
-export type BattleActionType = "attack" | "skill" | "magic" | "guard" | "item" | "flee";
+export type BattleActionType = "attack" | "skill" | "magic" | "guard" | "item" | "flee" | "equip_change";
 export interface BattleActionResult {
   ok: boolean; action: BattleActionType; turn_before: number | null; turn_after: number | null;
   battle_still_active: boolean; battle_ended: boolean;
@@ -23,15 +21,6 @@ export const allEnemiesDefeated = (state: Record<string, unknown>): boolean => {
   const visibleEnemies = enemiesOf(state).filter((enemy) => enemy.hidden !== true);
   return visibleEnemies.length > 0
     && visibleEnemies.every((enemy) => enemy.dead === true || Number(enemy.hp || 0) <= 0);
-};
-
-const COMMAND_TARGET: Record<BattleActionType, { symbol: string; occurrence: number }> = {
-  attack: { symbol: "attack", occurrence: 0 },
-  skill: { symbol: "skill", occurrence: 0 },
-  magic: { symbol: "skill", occurrence: 1 },
-  guard: { symbol: "guard", occurrence: 0 },
-  item: { symbol: "item", occurrence: 0 },
-  flee: { symbol: "escape", occurrence: 0 },
 };
 
 async function cursor(action: "confirm" | "cancel", waitFrames: number, timeoutMs: number) {
@@ -111,10 +100,14 @@ async function commitConfirm(timeoutMs: number): Promise<Record<string, unknown>
 // RPG Maker answers a choice the actor cannot pay for with a buzzer: the cursor stays put
 // and nothing is committed. Checking usability up front means the refusal is reported as a
 // clear error instead of costing a turn of real input, and the caller learns why.
-async function preflight(action: BattleActionType, skillIndex: number, itemIndex: number): Promise<void> {
-  if (action !== "skill" && action !== "magic" && action !== "item") return;
-  const options = objectValue(await sendQuery("battle_options", "", 8000).catch(() => null));
-  if (options.available !== true) return;
+function preflight(options: Record<string, unknown>, action: BattleActionType, skillIndex: number, itemIndex: number): Record<string, unknown> {
+  if (options.available !== true) throw new Error(`battle options unavailable: ${String(options.reason || options.error || "no actor is ready")}`);
+  const commands = (Array.isArray(options.commands) ? options.commands : []).map(objectValue);
+  const command = commands.find((entry) => entry.action === action);
+  if (!command) throw new Error(`this battler has no "${action}" command; available commands are ${commands.map((entry) => entry.action).join(", ") || "none"}`);
+  if (typeof command.symbol !== "string" || !Number.isInteger(command.occurrence)) throw new Error("the game is running an older bridge; re-inject rgss/BlackSoulsBridge.rb version 1.11.0 before battle input");
+  if (command.enabled === false) throw new Error(`the "${action}" command is disabled right now`);
+  if (action !== "skill" && action !== "magic" && action !== "item") return command;
   const actor = objectValue(options.actor);
   const purse = `${actor.name || "the actor"} has ${actor.mp}/${actor.mmp} MP and ${actor.tp} TP`;
   if (action === "item") {
@@ -122,7 +115,7 @@ async function preflight(action: BattleActionType, skillIndex: number, itemIndex
     const entry = items[itemIndex];
     if (!entry) throw new Error(`item_index ${itemIndex} does not exist; the battle item list holds ${items.length} entries (${items.map((item, index) => `${index}=${item.name}`).join(", ") || "none"})`);
     if (entry.usable_now !== true) throw new Error(`"${entry.name}" cannot be used right now; call black_souls_battle_options to see what is usable`);
-    return;
+    return command;
   }
   const groups = (Array.isArray(options.skill_groups) ? options.skill_groups : []).map(objectValue);
   const group = groups.find((candidate) => candidate.action === action);
@@ -131,6 +124,17 @@ async function preflight(action: BattleActionType, skillIndex: number, itemIndex
   const entry = skills[skillIndex];
   if (!entry) throw new Error(`skill_index ${skillIndex} does not exist in "${group.label}"; it holds ${skills.length} entries (${skills.map((skill, index) => `${index}=${skill.name}`).join(", ") || "none"})`);
   if (entry.usable_now !== true) throw new Error(`"${entry.name}" cannot be used right now: it costs ${entry.mp_cost} MP / ${entry.tp_cost} TP and ${purse}. Pick another skill, or attack to recover TP`);
+  return command;
+}
+
+function targetSlotFor(state: Record<string, unknown>, options: Record<string, unknown>, enemyIndex: number): number {
+  const roster = enemiesOf(state);
+  const requested = roster[enemyIndex];
+  if (!requested) throw new Error(`enemy_index ${enemyIndex} does not exist; the troop holds ${roster.length} entries (call black_souls_battle_options for living targets)`);
+  const targets = (Array.isArray(options.enemy_targets) ? options.enemy_targets : []).map(objectValue);
+  const target = targets.find((entry) => Number(entry.battler_index) === enemyIndex);
+  if (!target) throw new Error(`enemy_index ${enemyIndex} ("${String(requested.name || "")}") is ${requested.dead ? "already dead" : requested.hidden ? "hidden" : "not targetable"} and has no entry in the enemy window`);
+  return Number(target.target_index);
 }
 
 // Safety net for the same buzzer, in case the engine disagrees with the usability check
@@ -166,36 +170,29 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
   const before = await readState();
   const battleBefore = objectValue(before.battle);
   if (!battleBefore.active) return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleBefore), battle_still_active: false, battle_ended: false, enemies_after: [], party_after: [], message: "not in battle" };
+  if (String(objectValue(before.scene).name || "") !== "Scene_Battle") return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleBefore), battle_still_active: true, battle_ended: false, enemies_after: [], party_after: [], message: "battle is active but another scene owns input" };
   const started = Date.now();
   const remaining = () => Math.max(2000, timeoutMs - (Date.now() - started));
-
-  // The enemy target window only lists living enemies, while state reports every troop
-  // member including corpses. Translate the caller's battler index into a window position.
-  const roster = enemiesOf(before);
-  const alive = roster.filter((enemy) => !enemy.dead && !enemy.hidden);
-  const requested = roster[enemyIndex];
-  if (!requested) throw new Error(`enemy_index ${enemyIndex} does not exist; the troop holds ${roster.length} entries (call black_souls_battle_options for living targets)`);
-  const targetSlot = alive.findIndex((enemy) => enemy === requested);
-  if (targetSlot < 0) {
-    // Silently retargeting would spend the turn on a different battler than the caller
-    // named. Refuse instead; the window lists only living enemies.
-    throw new Error(`enemy_index ${enemyIndex} ("${String(requested.name || "")}") is ${requested.hidden === true ? "hidden" : "already dead"} and has no entry in the target window; pick a living enemy`);
-  }
+  let inputMayHaveCommitted = false;
 
   try {
     const inputReady = await ensureActorCommandWindow(remaining());
     if (!inputReady) {
       const ended = await advanceBattleEnd(remaining());
       const endBattle = objectValue(ended?.battle ?? {});
-      return { ok: true, action, turn_before: turnOf(battleBefore), turn_after: turnOf(endBattle), battle_still_active: Boolean(endBattle.active), battle_ended: true, enemies_after: [], party_after: [], message: "the battle ended before this command could be entered; settlement was advanced" };
+      return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(endBattle), battle_still_active: Boolean(endBattle.active), battle_ended: true, enemies_after: [], party_after: [], message: "the battle ended before this command could be entered; no input was submitted" };
     }
-    await preflight(action, skillIndex, itemIndex);
-    const target = COMMAND_TARGET[action];
-    await selectCommandSymbol(target.symbol, target.occurrence, remaining());
+    const options = objectValue(await sendQuery("battle_options", "", 8000));
+    const command = preflight(options, action, skillIndex, itemIndex);
+    let targetSlot = action === "attack" ? targetSlotFor(before, options, enemyIndex) : null;
+    await selectCommandSymbol(String(command.symbol), Number(command.occurrence), remaining());
 
+    inputMayHaveCommitted = true;
     let state = await commitConfirm(remaining());
     let window = state ? activeWindowOf(state) : null;
+    let selectionOpened = false;
     if (window && (window.class === "Window_BattleSkill" || window.class === "Window_BattleItem")) {
+      selectionOpened = true;
       const submenu = window.class;
       const wanted = submenu === "Window_BattleSkill" ? skillIndex : itemIndex;
       await selectWindowIndex(wanted, remaining());
@@ -203,26 +200,36 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
       window = state ? activeWindowOf(state) : null;
     }
     if (window && window.class === "Window_BattleEnemy") {
+      selectionOpened = true;
+      targetSlot ??= targetSlotFor(state ?? before, options, enemyIndex);
       await selectWindowIndex(targetSlot, remaining());
       state = await confirmAndLeave("Window_BattleEnemy", `target ${targetSlot}`, remaining());
       window = state ? activeWindowOf(state) : null;
     }
     if (window && window.class === "Window_BattleActor") {
-      await commitConfirm(remaining());
+      selectionOpened = true;
+      state = await confirmAndLeave("Window_BattleActor", "ally target", remaining());
+      window = state ? activeWindowOf(state) : null;
+    }
+    if (window?.class === "Window_ActorCommand" && !selectionOpened && ["attack", "skill", "magic", "item"].includes(action)) {
+      throw new Error(`${action} did not open a selection window or advance input; read state before retrying`);
     }
   } catch (error) {
     const rollback = await rollbackToCommandWindow(8000);
     const recovered = await readStateSafe();
     const stranded = String(activeWindowOf(recovered ?? {})?.class ?? "none");
     const tail = rollback.unwound
-      ? "the battle menu was rolled back to the command window; no action was committed by this call"
+      ? inputMayHaveCommitted
+        ? "the battle menu returned to the command window, but the input may already have executed; read state before retrying"
+        : "the battle menu was rolled back to the command window; no action was committed by this call"
       : rollback.known
         ? `the battle menu could NOT be unwound and is still sitting on ${stranded} - do not send blind confirms, read state first`
         : "the battle state could not be read during rollback, so the menu position is unknown - read state before sending any input";
     throw new Error(`${error instanceof Error ? error.message : String(error)} (${tail})`, { cause: error });
   }
 
-  // Let the turn resolve: finished when an input window returns or the battle ends.
+  // A second action slot or a turn-free skill can reopen the actor window before
+  // the turn resolves; wait for that window or the battle ending, not a fixed delay.
   const deadline = Date.now() + remaining();
   let after = await readStateSafe();
   let ended = false;
@@ -230,7 +237,7 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
     if (after) {
       const battle = objectValue(after.battle);
       const scene = String(objectValue(after.scene).name || "");
-      if (!battle.active || scene !== "Scene_Battle") { ended = true; break; }
+      if (!battle.active || scene !== "Scene_Battle") { ended = !battle.active; break; }
       // Victory settlement keeps both Scene_Battle and $game_party.in_battle true
       // until its text is confirmed. Detect the troop's defeated state here so the
       // caller advances those screens instead of waiting for the full timeout.
@@ -252,13 +259,15 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
 
   const battleAfter = objectValue(after.battle);
   const party = objectValue(after.party);
-  const stillActive = Boolean(battleAfter.active) && String(objectValue(after.scene).name || "") === "Scene_Battle";
+  const stillActive = Boolean(battleAfter.active);
   const enemies = (stillActive ? enemiesOf(after) : []).map((enemy) => ({ name: String(enemy.name || ""), hp: Number(enemy.hp || 0), mhp: Number(enemy.mhp || 0), dead: Boolean(enemy.dead) }));
   const members = (Array.isArray(party.members) ? party.members : []).map(objectValue).map((member) => ({ name: String(member.name || ""), hp: Number(member.hp || 0), mhp: Number(member.mhp || 0), mp: Number(member.mp || 0), mmp: Number(member.mmp || 0), tp: Number(member.tp || 0) }));
   const message = !stillActive
     ? `the battle ended and settlement was advanced; current scene is ${String(objectValue(after.scene).name || "unknown")}`
     : action === "flee"
-      ? "flee was selected but the battle continues (escape may be blocked in this fight)"
-      : "battle action committed; resulting state captured";
+      ? "escape input accepted; the battle continues (escape may have failed)"
+      : action === "equip_change"
+        ? "equipment command accepted; configure equipment before returning to battle"
+        : "one battle input accepted; execution or further action selection may still be pending";
   return { ok: true, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleAfter), battle_still_active: stillActive, battle_ended: !stillActive, enemies_after: enemies, party_after: members, message };
 }

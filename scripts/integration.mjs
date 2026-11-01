@@ -18,7 +18,7 @@ try {
   const expected = [
     "black_souls_status", "black_souls_launch", "black_souls_get_state",
     "black_souls_get_map", "black_souls_input", "black_souls_input_sequence",
-    "black_souls_list_saves", "black_souls_kill", "black_souls_save",
+    "black_souls_list_saves", "black_souls_select_game", "black_souls_kill", "black_souls_save",
     "black_souls_load", "black_souls_situation",
     "black_souls_get_variables", "black_souls_get_switches",
     "black_souls_get_inventory", "black_souls_get_party_detail",
@@ -41,7 +41,7 @@ try {
   if (expectedSaveCount > 0 && saves.length < expectedSaveCount) {
     throw new Error(`Expected at least ${expectedSaveCount} saves, found ${saves.length}`);
   }
-  if (status?.game?.game !== "BLACK SOULS") throw new Error("Unexpected game identity");
+  if (!["BLACK SOULS", "BLACK SOULS II"].includes(status?.game?.game)) throw new Error("Unexpected game identity");
   console.log(JSON.stringify({ tools: names, saves: saves.length, bridge_connected: status?.bridge?.connected }, null, 2));
 } finally {
   await client.close();

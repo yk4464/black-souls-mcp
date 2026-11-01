@@ -3,6 +3,12 @@
 # wait loops) and falls back to Scene_Base#update if that alias is refused.
 
 module Input
+  BSMCP_BUTTON_KEYS = {
+    2 => :DOWN, 4 => :LEFT, 6 => :RIGHT, 8 => :UP,
+    11 => :A, 12 => :B, 13 => :C, 14 => :X, 15 => :Y, 16 => :Z,
+    17 => :L, 18 => :R, 21 => :SHIFT, 22 => :CTRL, 23 => :ALT
+  }.freeze
+
   class << self
     alias bsmcp_native_update update unless method_defined?(:bsmcp_native_update)
     alias bsmcp_native_press press? unless method_defined?(:bsmcp_native_press)
@@ -21,6 +27,10 @@ module Input
     @bsmcp_pending[key] = [frames.to_i, 1].max
   end
 
+  def self.bsmcp_key(key)
+    BSMCP_BUTTON_KEYS.fetch(key, key)
+  end
+
   def self.update
     bsmcp_native_update
     @bsmcp_active ||= {}
@@ -37,17 +47,19 @@ module Input
   end
 
   def self.press?(key)
-    @bsmcp_last_poll_frame = (Graphics.frame_count rescue nil)
-    ((@bsmcp_active || {})[key].to_i > 0) || bsmcp_native_press(key)
+    in_battle = defined?($game_party) && $game_party &&
+      defined?(BlackSoulsBridge) && BlackSoulsBridge.safe_call($game_party, :in_battle, false)
+    @bsmcp_last_poll_frame = (Graphics.frame_count rescue nil) unless in_battle
+    ((@bsmcp_active || {})[bsmcp_key(key)].to_i > 0) || bsmcp_native_press(key)
   end
 
   def self.trigger?(key)
     @bsmcp_last_poll_frame = (Graphics.frame_count rescue nil)
-    !!((@bsmcp_triggered || {})[key]) || bsmcp_native_trigger(key)
+    !!((@bsmcp_triggered || {})[bsmcp_key(key)]) || bsmcp_native_trigger(key)
   end
 
-  # Last frame on which the engine queried real input state. The bridge uses this to
-  # tell "a scene is consuming input" from "the engine sits in an internal wait loop".
+  # Ignore press?-only fast-forward checks during battle waits; map event button
+  # conditions still use press? as their only input poll.
   def self.bsmcp_last_poll_frame
     @bsmcp_last_poll_frame
   end
@@ -65,16 +77,18 @@ module Input
   end
 
   def self.dir4
+    @bsmcp_last_poll_frame = (Graphics.frame_count rescue nil)
     bsmcp_direction.nonzero? || bsmcp_native_dir4
   end
 
   def self.dir8
+    @bsmcp_last_poll_frame = (Graphics.frame_count rescue nil)
     bsmcp_direction.nonzero? || bsmcp_native_dir8
   end
 end
 
 module BlackSoulsBridge
-  VERSION = "1.10.4"
+  VERSION = "1.11.0"
   PROTOCOL = "black-souls-bridge/1"
   ROOT = "BridgeRuntime"
   INBOX = ROOT + "/inbox"
@@ -655,56 +669,67 @@ module BlackSoulsBridge
     append_error(error); { "found" => false, "error" => error.message }
   end
 
-  # Flatten every choice the acting battler can actually make this turn, including the
-  # contents of the skill / magic / item submenus, with the exact indices the input side
-  # needs. Without this an agent only ever sees the top-level command names and defaults
-  # to plain attacks, never discovering the rest of its kit.
+  # Use the battle windows' actual command list and include?/enable? filters. Both
+  # games customize them, so actor.skills and hand-built command lists have wrong indices.
   def self.query_battle_options(params = nil)
     return { "available" => false, "reason" => "not in battle" } unless defined?($game_party) && $game_party && safe_call($game_party, :in_battle, false)
     actor = defined?(BattleManager) ? safe_call(BattleManager, :actor, nil) : nil
-    actor ||= safe_call($game_party, :members, []).first
-    return { "available" => false, "reason" => "no acting battler" } unless actor
+    return { "available" => false, "reason" => "no acting battler ready" } unless actor
+    scene = defined?(SceneManager) ? SceneManager.scene : nil
+    command_window = safe_instance_variable(scene, :@actor_command_window, nil)
+    skill_window = safe_instance_variable(scene, :@skill_window, nil)
+    item_window = safe_instance_variable(scene, :@item_window, nil)
+    return { "available" => false, "reason" => "battle command window not ready" } unless command_window && skill_window && item_window
 
-    commands = [{ "index" => 0, "action" => "attack", "label" => "attack" }]
-    skill_types = (safe_call(actor, :added_skill_types, []) || []).uniq.sort
-    action_names = ["skill", "magic"]
+    commands = []
     groups = []
-    skill_types.each_with_index do |stype_id, order|
-      type_name = ($data_system.skill_types[stype_id] rescue "") if defined?($data_system) && $data_system
-      commands << { "index" => commands.length, "action" => (action_names[order] || "skill"), "label" => type_name.to_s, "skill_type_id" => stype_id }
-      entries = []
-      (safe_call(actor, :skills, []) || []).each do |skill|
-        next unless skill && safe_call(skill, :stype_id, nil) == stype_id
-        entries << {
-          "index" => entries.length,
-          "id" => safe_call(skill, :id, 0),
-          "name" => safe_call(skill, :name, ""),
-          "mp_cost" => safe_call(actor, :skill_mp_cost, safe_call(skill, :mp_cost, 0), skill),
-          "tp_cost" => safe_call(actor, :skill_tp_cost, 0, skill),
-          "usable_now" => !!safe_call(actor, :usable?, false, skill),
-          "scope" => safe_call(skill, :scope, 0),
-          "description" => safe_call(skill, :description, "").to_s.split("\n").first.to_s
-        }
+    occurrences = Hash.new(0)
+    (safe_instance_variable(command_window, :@list, []) || []).each_with_index do |entry, index|
+      symbol = entry[:symbol].to_s
+      occurrence = occurrences[symbol]
+      occurrences[symbol] += 1
+      action = symbol == "skill" && occurrence == 1 ? "magic" : symbol == "escape" ? "flee" : symbol
+      label = entry[:name].is_a?(Array) ? entry[:name].first : entry[:name]
+      command = { "index" => index, "symbol" => symbol, "occurrence" => occurrence,
+        "action" => action, "label" => label.to_s, "enabled" => !!entry[:enabled] }
+      if symbol == "skill"
+        stype_id = entry[:ext]
+        command["skill_type_id"] = stype_id
+        previous_actor = safe_instance_variable(skill_window, :@actor, nil)
+        previous_type = safe_instance_variable(skill_window, :@stype_id, nil)
+        entries = []
+        begin
+          skill_window.instance_variable_set(:@actor, actor)
+          skill_window.instance_variable_set(:@stype_id, stype_id)
+          (safe_call(actor, :skills, []) || []).each do |skill|
+            next unless skill && skill_window.include?(skill)
+            entries << { "index" => entries.length, "id" => safe_call(skill, :id, 0),
+              "name" => safe_call(skill, :name, ""),
+              "mp_cost" => safe_call(actor, :skill_mp_cost, safe_call(skill, :mp_cost, 0), skill),
+              "tp_cost" => safe_call(actor, :skill_tp_cost, 0, skill),
+              "usable_now" => !!safe_call(skill_window, :enable?, false, skill),
+              "scope" => safe_call(skill, :scope, 0),
+              "description" => safe_call(skill, :description, "").to_s.split("\n").first.to_s }
+          end
+        ensure
+          skill_window.instance_variable_set(:@actor, previous_actor)
+          skill_window.instance_variable_set(:@stype_id, previous_type)
+        end
+        groups << { "action" => action, "label" => label.to_s, "command_index" => index,
+          "skill_type_id" => stype_id, "skills" => entries }
       end
-      groups << { "action" => (action_names[order] || "skill"), "label" => type_name.to_s, "skill_type_id" => stype_id, "skills" => entries }
+      commands << command
     end
-    commands << { "index" => commands.length, "action" => "guard", "label" => "guard" }
-    commands << { "index" => commands.length, "action" => "item", "label" => "item" }
 
-    # Window_BattleItem lists $game_party.usable_items; older or customized builds may not
-    # define it, so fall back to asking the acting battler what it can actually use.
-    all_items = safe_call($game_party, :all_items, []) || []
-    usable = safe_call($game_party, :usable_items, nil)
-    usable = all_items.select { |item| !!safe_call(actor, :usable?, false, item) } if usable.nil?
     items = []
-    all_items.each do |item|
-      next unless item && usable.include?(item)
+    (safe_call($game_party, :all_items, []) || []).each do |item|
+      next unless item && item_window.include?(item)
       items << {
         "index" => items.length,
         "id" => safe_call(item, :id, 0),
         "name" => safe_call(item, :name, ""),
         "count" => safe_call($game_party, :item_number, 0, item),
-        "usable_now" => !!safe_call(actor, :usable?, false, item),
+        "usable_now" => !!safe_call(item_window, :enable?, false, item),
         "scope" => safe_call(item, :scope, 0),
         "description" => safe_call(item, :description, "").to_s.split("\n").first.to_s
       }
@@ -843,7 +868,8 @@ module BlackSoulsBridge
         "index" => safe_call(value, :index, -1),
         "item_max" => item_max,
         "col_max" => col_max,
-        "current_symbol" => current_symbol
+        "current_symbol" => current_symbol,
+        "current_enabled" => !!safe_call(value, :current_item_enabled?, false)
       }
     elsif value.is_a?(Array)
       value.each_with_index do |child, index|
@@ -903,8 +929,11 @@ module BlackSoulsBridge
       "scene" => {
         "name" => scene ? scene.class.to_s : nil,
         "windows" => window_summaries(scene),
-        "file_index" => safe_instance_variable(scene, :@index, nil)
+        "file_index" => safe_instance_variable(scene, :@index, nil),
+        "interpreter_running" => (scene && scene.class.to_s == "Scene_Map" && defined?($game_map) && $game_map ?
+          !!safe_call(safe_call($game_map, :interpreter, nil), :running?, false) : nil)
       },
+      "system" => { "menu_disabled" => (defined?($game_system) && $game_system ? !!safe_call($game_system, :menu_disabled, false) : false) },
       "map" => (map_ready? ? {
         "id" => safe_call($game_map, :map_id, 0),
         "width" => safe_call($game_map, :width, 0),

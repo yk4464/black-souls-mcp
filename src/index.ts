@@ -3,12 +3,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ACTIONS, MAX_SEQUENCE_FRAMES, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, queryArmors, queryFullParty, queryItems, querySwitches, queryVariables, queryWeapons, readMap, readState, sendAction, sendQuery, sendSequence, triggerLoad, triggerSave, waitForCondition } from "./bridge.js";
-import { getGameInfo, killGame, launchGame, listSaves } from "./game.js";
+import { getGameInfo, killGame, launchGame, listGames, listSaves, selectGame } from "./game.js";
+import { GAME_IDS } from "./config.js";
 import { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } from "./memory.js";
 import { interact, navigate } from "./navigation.js";
 import { battleAction } from "./battle.js";
 
-const SERVER_VERSION = "1.10.4";
+const SERVER_VERSION = "1.11.0";
 const server = new McpServer({ name: "black-souls-mcp", version: SERVER_VERSION });
 const outputSchema = { data: z.unknown() };
 const result = (value: unknown) => ({
@@ -32,7 +33,7 @@ const execute = async (operation: () => Promise<unknown>) => {
 };
 
 server.registerTool("black_souls_status", {
-  description: "Inspect the BLACK SOULS MCP edition and live RGSS3 bridge status.", inputSchema: {},
+  description: "Inspect the selected game (see black_souls_select_game), its prepared copy, and the live RGSS3 bridge status.", inputSchema: {},
   outputSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, async () => execute(async () => ({ server_version: SERVER_VERSION, game: await getGameInfo(), bridge: await bridgeStatus() })));
@@ -68,8 +69,8 @@ server.registerTool("black_souls_input", {
 }, async ({ action, repeat, timeout_ms }) => execute(() => sendAction(action, repeat, timeout_ms)));
 
 const stepSchema = z.union([
-  z.object({ action: z.enum(ACTIONS), repeat: z.number().int().min(1).max(100).optional() }),
-  z.object({ wait_frames: z.number().int().min(1).max(600) }),
+  z.object({ action: z.enum(ACTIONS), repeat: z.number().int().min(1).max(100).optional() }).strict(),
+  z.object({ wait_frames: z.number().int().min(1).max(600) }).strict(),
 ]);
 // encodeSteps enforces the frame budget at execution time; mirroring it here rejects a
 // schema-valid-but-over-budget sequence at validation with the same message instead of
@@ -92,6 +93,13 @@ server.registerTool("black_souls_list_saves", {
   outputSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, async () => execute(async () => ({ server_version: SERVER_VERSION, bridge: await bridgeStatus(), saves: await listSaves() })));
+
+server.registerTool("black_souls_select_game", {
+  description: "Choose which game every other tool operates on: bs1 = BLACK SOULS, bs2 = BLACK SOULS II. Omit game to list both with their prepared copies and the current choice. The choice persists across server restarts; switching is refused while the current game is still running.",
+  inputSchema: { game: z.enum(GAME_IDS).optional() },
+  outputSchema,
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+}, async ({ game }) => execute(() => game ? selectGame(game) : listGames()));
 
 server.registerTool("black_souls_kill", {
   description: "Forcefully terminate the running BLACK SOULS process. Safe to call when game is not running.", inputSchema: {}, outputSchema,
@@ -190,12 +198,12 @@ server.registerTool("black_souls_interact", {
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async ({ event_id, timeout_ms }) => execute(() => interact(event_id, timeout_ms)));
 server.registerTool("black_souls_battle_action", {
-  description: "Execute one battle turn in a single call: pick the command (attack / skill(特技) / magic(魔法) / guard / item / flee), the list index, and the enemy target; menu navigation is closed-loop against the real cursor. Indices come from black_souls_battle_options; a choice the battler cannot afford is refused before any input is spent. Returns resulting party (including MP/TP) and enemy state.",
-  inputSchema: { action: z.enum(["attack", "skill", "magic", "item", "guard", "flee"]), skill_index: z.number().int().min(0).max(99).optional(), item_index: z.number().int().min(0).max(99).optional(), enemy_index: z.number().int().min(0).max(19).optional(), timeout_ms: z.number().int().min(5000).max(60000).optional() }, outputSchema,
+  description: "Submit one battle input, not a whole turn: pick an available command (attack / skill / magic if listed / guard / item / flee / equip_change), a list index, and an enemy target if needed. Use black_souls_battle_options for actual commands and exact indices; disabled commands and unusable entries are refused. A subsequent action slot or ATB wait may remain before execution.",
+  inputSchema: { action: z.enum(["attack", "skill", "magic", "item", "guard", "flee", "equip_change"]), skill_index: z.number().int().min(0).max(99).optional(), item_index: z.number().int().min(0).max(99).optional(), enemy_index: z.number().int().min(0).max(19).optional(), timeout_ms: z.number().int().min(5000).max(60000).optional() }, outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async (args) => execute(() => battleAction(args.action, args.skill_index, args.item_index, args.enemy_index, args.timeout_ms)));
 server.registerTool("black_souls_battle_options", {
-  description: "List everything the acting battler can do this turn: top-level commands, the full contents of every skill and magic submenu (name, MP/TP cost, whether it is usable right now, description), usable battle items with counts, and living enemy targets. Every entry carries the exact index to pass to black_souls_battle_action, so call this before choosing a battle action instead of guessing.",
+  description: "Read actual actor commands (including enablement, escape and equipment), visible skill/item lists with usable flags, and targetable enemies. magic exists only if a second skill group appears; during ATB charge no actor is ready. Indices match the game windows and feed black_souls_battle_action.",
   inputSchema: {}, outputSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, async () => execute(() => sendQuery("battle_options")));

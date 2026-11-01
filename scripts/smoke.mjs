@@ -116,6 +116,7 @@ try {
     "black_souls_save",
     "black_souls_scratchpad_read",
     "black_souls_scratchpad_write",
+    "black_souls_select_game",
     "black_souls_session_log_append",
     "black_souls_session_log_read",
     "black_souls_situation",
@@ -131,6 +132,12 @@ try {
   assert.equal(unavailableState.isError, true);
   assert.equal(unavailableState.structuredContent.data.ok, false);
   assert.match(unavailableState.structuredContent.data.error.message, /bridge is not ready/i);
+
+  const mixedStep = await request("tools/call", { name: "black_souls_input_sequence", arguments: {
+    steps: [{ action: "move_down", wait_frames: 12 }],
+  } });
+  assert.equal(mixedStep.isError, true, "a mixed action/wait step must fail validation instead of dropping the action");
+  assert.match(JSON.stringify(mixedStep), /unrecognized|invalid|unknown|wait_frames/i);
 
   console.log("MCP handshake, tool discovery, structured status, and structured error handling: OK");
   if (stderr.trim()) console.log(stderr.trim());

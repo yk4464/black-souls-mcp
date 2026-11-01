@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { gameDir, installRoot } from "./config.js";
+import { gameDir, installRoot, memoryDir } from "./config.js";
 
 export const BRIDGE_PROTOCOL = "black-souls-bridge/1";
 export const ACTIONS = [
@@ -26,7 +26,8 @@ const TRANSIENT_FILE_CODES = new Set(["EACCES", "EPERM", "EBUSY", "ENFILE", "EMF
 const HEARTBEAT_MAX_AGE_MS = 60000;
 // Remembered across calls so a failed snapshot read can still tell "the game died" apart
 // from "the game is alive but I could not read a file this instant".
-let lastKnownPid = 0;
+// Keyed by game directory: after switching games, bs1's last PID says nothing about bs2.
+const lastKnownPids = new Map<string, number>();
 const MAX_PENDING_COMMANDS = 128;
 export const MAX_SEQUENCE_FRAMES = 3600;
 const execFileAsync = promisify(execFile);
@@ -166,7 +167,7 @@ export async function bridgeStatus(): Promise<Record<string, unknown>> {
     const token = String(info.launch_token || "");
     const infoPid = Number(info.pid || 0);
     // Recorded before the state read so a snapshot failure still knows which process to ask about.
-    if (infoPid > 0) lastKnownPid = infoPid;
+    if (infoPid > 0) lastKnownPids.set(gameDir(), infoPid);
     const state = await readStateSnapshot(token || undefined);
     const statePid = Number(state.pid || 0);
     const updatedAt = Number(state.updated_at || 0) * 1000;
@@ -199,6 +200,7 @@ export async function bridgeStatus(): Promise<Record<string, unknown>> {
     // process died here sent an earlier playtester chasing a phantom crash while the game
     // was sitting on screen waiting for a keypress, so answer "unknown" unless the last
     // known PID proves otherwise.
+    const lastKnownPid = lastKnownPids.get(gameDir()) ?? 0;
     const alive = lastKnownPid > 0 ? processIsAlive(lastKnownPid) : null;
     return {
       connected: false,
@@ -563,7 +565,7 @@ const sceneName = (state: Record<string, unknown>): string | null => {
   return typeof value === "string" ? value : null;
 };
 
-export interface CommandWindowInfo { class: string; active: boolean; index: number; item_max: number; col_max: number; current_symbol: string | null }
+export interface CommandWindowInfo { class: string; active: boolean; index: number; item_max: number; col_max: number; current_symbol: string | null; current_enabled: boolean | null }
 export const windowsOf = (state: Record<string, unknown>): CommandWindowInfo[] => {
   const raw = objectValue(state.scene).windows;
   return (Array.isArray(raw) ? raw : []).map(objectValue).map((window) => ({
@@ -573,6 +575,7 @@ export const windowsOf = (state: Record<string, unknown>): CommandWindowInfo[] =
     item_max: Number(window.item_max || 0),
     col_max: Math.max(1, Number(window.col_max || 1)),
     current_symbol: typeof window.current_symbol === "string" ? window.current_symbol : null,
+    current_enabled: typeof window.current_enabled === "boolean" ? window.current_enabled : null,
   }));
 };
 export const activeWindowOf = (state: Record<string, unknown>): CommandWindowInfo | null =>
@@ -618,7 +621,10 @@ export async function selectCommandSymbol(symbol: string, occurrence = 0, timeou
     }
     seen.push(`${window.index}=${window.current_symbol ?? "null"}`);
     if (window.current_symbol === symbol) {
-      if (matched === occurrence) return state;
+      if (matched === occurrence) {
+        if (window.current_enabled === false) throw new Error(`Command "${symbol}" is disabled in ${startClass}; choose an enabled command`);
+        return state;
+      }
       matched += 1;
     }
     state = await cursorStep("move_down", timeoutMs);
@@ -685,6 +691,7 @@ export async function triggerSave(slot: number, timeoutMs = 30000): Promise<Save
   const beforeScene = sceneName(before);
   if (beforeScene !== "Scene_Map") throw new Error(`Save is only available from Scene_Map (current: ${beforeScene || "unknown"})`);
   if (objectValue(before.message).busy) throw new Error("Save is unavailable while a message or choice is active");
+  if (objectValue(before.system).menu_disabled === true) throw new Error("Save unavailable: the story has disabled the menu (菜单被剧情禁用)");
   const statBefore = await fs.stat(savefilePath(slot)).catch(() => null);
   await sendSequence([{ action: "open_menu" }, { wait_frames: 12 }], timeoutMs);
   try {
@@ -767,6 +774,7 @@ export async function triggerLoad(slot: number, timeoutMs = 30000): Promise<Load
     };
   }
   if (beforeScene === "Scene_Map") {
+    if (objectValue(before.system).menu_disabled === true) throw new Error("Load unavailable: the story has disabled the menu (菜单被剧情禁用)");
     await sendSequence([{ action: "open_menu" }, { wait_frames: 12 }], timeoutMs);
     try {
       await selectCommandSymbol("load", 0, timeoutMs);
@@ -797,13 +805,29 @@ export interface DialogueResult { ok: boolean; lines_advanced: number; final_cho
 export async function advanceDialogue(choiceIndex?: number, maxAdvances = 30, timeoutMs = 30000): Promise<DialogueResult> {
   let state = await readState(); let message = objectValue(state.message);
   if (!message.busy) return { ok: false, lines_advanced: 0, final_choices: [], dialogue_ended: true, scene_after: sceneName(state), message: "no active dialogue" };
-  const started = Date.now(); let lines = 0; let selectedChoice = false;
-  for (; lines < maxAdvances; lines += 1) {
+  const started = Date.now(); let lines = 0; let selectedChoice = false; let requestedChoice = choiceIndex;
+  const remaining = () => Math.max(500, timeoutMs - (Date.now() - started));
+  // The message queue can be empty between event commands. Do not send confirm
+  // into that gap: on the map it can trigger the event again (cancel opens the menu).
+  const waitForNextMessage = async () => {
+    const waitingSince = Date.now();
+    const deadline = Math.min(started + timeoutMs, waitingSince + 2500);
+    let settledSince: number | null = null;
+    while (Date.now() < deadline) {
+      await sleep(100);
+      state = await readState(); message = objectValue(state.message);
+      if (message.busy) return;
+      const running = objectValue(state.scene).interpreter_running;
+      if (running === true) { settledSince = null; continue; }
+      settledSince ??= Date.now();
+      if (Date.now() - settledSince >= 200 && (running === false || Date.now() - waitingSince >= 800)) return;
+    }
+  };
+  while (lines < maxAdvances && message.busy) {
     const choices = Array.isArray(message.choices) ? message.choices.map(String) : [];
     if (choices.length) {
-      if (choiceIndex === undefined) return { ok: true, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice required" };
-      if (!Number.isInteger(choiceIndex) || choiceIndex < 0 || choiceIndex >= choices.length) return { ok: false, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice index out of range" };
-      const remaining = () => Math.max(500, timeoutMs - (Date.now() - started));
+      if (requestedChoice === undefined) return { ok: true, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice required" };
+      if (!Number.isInteger(requestedChoice) || requestedChoice < 0 || requestedChoice >= choices.length) return { ok: false, lines_advanced: lines, final_choices: choices, dialogue_ended: false, scene_after: sceneName(state), message: "choice index out of range" };
       // $game_message exposes choices as soon as the interpreter queues them, but a
       // preceding \! pause can keep Window_ChoiceList inactive until the text itself is
       // confirmed. Advance only while no selectable window owns focus, then wait for the
@@ -823,16 +847,27 @@ export async function advanceDialogue(choiceIndex?: number, maxAdvances = 30, ti
       // BLACK SOULS installs an anti-misclick script that intentionally opens every
       // choice window at index -1. Blindly pressing confirm cannot select choice 0,
       // and N down presses select N-1. Navigate against the observed cursor instead.
-      await selectWindowIndex(choiceIndex, remaining());
+      const selected = await selectWindowIndex(requestedChoice, remaining());
+      if (activeWindowOf(selected)?.current_enabled === false) throw new Error(`choice_index ${requestedChoice} is disabled; select an enabled option`);
       await sendSequence([{ action: "confirm" }, { wait_frames: 8 }], remaining());
-      state = await readState(); message = objectValue(state.message); selectedChoice = true; lines += 1; break;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        state = await readState();
+        if (activeWindowOf(state)?.class !== "Window_ChoiceList") break;
+        await sleep(100);
+      }
+      if (activeWindowOf(state)?.class === "Window_ChoiceList") throw new Error(`choice_index ${requestedChoice} was not accepted; the choice window remains active`);
+      message = objectValue(state.message); selectedChoice = true; requestedChoice = undefined; lines += 1;
+      if (!message.busy) await waitForNextMessage();
+      continue;
     }
-    await sendSequence([{ action: "confirm" }, { wait_frames: 8 }], Math.max(500, timeoutMs - (Date.now() - started)));
-    state = await readState(); message = objectValue(state.message); if (!message.busy) { lines += 1; break; }
+    await sendSequence([{ action: "confirm" }, { wait_frames: 8 }], remaining());
+    state = await readState(); message = objectValue(state.message); lines += 1;
+    if (!message.busy) await waitForNextMessage();
     if (Date.now() - started >= timeoutMs) break;
   }
   const finalChoices = Array.isArray(message.choices) ? message.choices.map(String) : [];
-  return { ok: true, lines_advanced: lines, final_choices: finalChoices, dialogue_ended: !message.busy, scene_after: sceneName(state), message: !message.busy ? "dialogue ended" : finalChoices.length ? "choice required" : selectedChoice ? "choice selected; dialogue continues" : "maximum advances reached" };
+  const ended = !message.busy && objectValue(state.scene).interpreter_running !== true;
+  return { ok: true, lines_advanced: lines, final_choices: finalChoices, dialogue_ended: ended, scene_after: sceneName(state), message: ended ? "dialogue ended" : finalChoices.length ? "choice required" : !message.busy ? "the event is still running; more dialogue may follow" : selectedChoice ? "choice selected; dialogue continues" : "maximum advances reached" };
 }
 
 export async function buildSituation(): Promise<SituationSnapshot> {
@@ -871,11 +906,17 @@ export async function buildSituation(): Promise<SituationSnapshot> {
   if (scene === "Scene_Title") suggested.push("confirm (start game)", "move_down + confirm (load game)");
   else if (busy && choices.length) suggested.push("confirm (select choice)", "cancel (back)");
   else if (busy) suggested.push("confirm (advance text)");
-  else if (battleActive) suggested.push("confirm (fight)", "cancel (flee/menu)");
+  else if (battleActive) {
+    const input = activeWindowOf(state);
+    if (input?.class === "Window_ActorCommand") suggested.push("black_souls_battle_options (available actor commands)");
+    else if (input?.class === "Window_PartyCommand") suggested.push("confirm (fight)");
+    else suggested.push("wait for a battle input window");
+  }
+  else if (scene === "Scene_Map" && objectValue(state.scene).interpreter_running === true) suggested.push("wait for event to finish");
   else if (scene === "Scene_Map") {
     if (passable?.up) suggested.push("move_up"); if (passable?.down) suggested.push("move_down");
     if (passable?.left) suggested.push("move_left"); if (passable?.right) suggested.push("move_right");
-    suggested.push("open_menu");
+    if (objectValue(state.system).menu_disabled !== true) suggested.push("open_menu");
   }
   if (!suggested.length) suggested.push("read state and wait");
   const warnings: string[] = [];
@@ -914,8 +955,8 @@ export async function bridgeHealth(): Promise<HealthReport> {
   const inbox = await directoryFileAges(inboxDir(), ".cmd"); const outbox = await directoryFileAges(outboxDir(), ".json");
   let lastError: string | null = null; let errorRecent = false;
   try { const errorFile = path.join(runtimeDir(), "error.log"); const stat = await fs.stat(errorFile); errorRecent = Date.now() - stat.mtimeMs < 60000; const lines = (await fs.readFile(errorFile, "utf8")).trim().split(/\r?\n/); lastError = lines.at(-1) || null; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  let memoryOk = true; const memoryDir = path.join(installRoot(), "memory"); const probe = path.join(memoryDir, `.health-${process.pid}-${randomUUID()}.tmp`);
-  try { await fs.mkdir(memoryDir, { recursive: true }); await fs.writeFile(probe, "ok", "ascii"); await fs.unlink(probe); } catch { memoryOk = false; await fs.unlink(probe).catch(() => undefined); }
+  let memoryOk = true; const memoryPath = memoryDir(); const probe = path.join(memoryPath, `.health-${process.pid}-${randomUUID()}.tmp`);
+  try { await fs.mkdir(memoryPath, { recursive: true }); await fs.writeFile(probe, "ok", "ascii"); await fs.unlink(probe); } catch { memoryOk = false; await fs.unlink(probe).catch(() => undefined); }
   const issues: HealthIssue[] = []; const gameRunning = status.process_alive === true; const connected = status.connected === true;
   // Failing to read a snapshot is not evidence the game died. Saying so anyway makes
   // callers kill a healthy game, so only claim death when the PID itself is gone.

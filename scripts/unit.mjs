@@ -12,7 +12,7 @@ const runtime = path.join(game, "BridgeRuntime");
 process.env.BLACK_SOULS_ROOT = root;
 process.env.BLACK_SOULS_DIR = game;
 
-const { ACTIONS, BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, sendQuery, sendSequence, triggerLoad, triggerSave, waitForCondition } = await import("../dist/bridge.js");
+const { ACTIONS, BRIDGE_PROTOCOL, advanceDialogue, bridgeHealth, bridgeStatus, buildSituation, evalStatus, prepareBridgeRuntime, queryVariables, readMap, readState, selectCommandSymbol, sendQuery, sendSequence, triggerLoad, triggerSave, waitForCondition } = await import("../dist/bridge.js");
 const { killGame, launchGame, listSaves } = await import("../dist/game.js");
 const { appendSessionLog, deleteMemory, readGoals, readMemory, readScratchpad, readSessionLog, setActiveGoal, writeGoal, writeMemory, writeScratchpad } = await import("../dist/memory.js");
 const { findPath, navigate, interact } = await import("../dist/navigation.js");
@@ -126,7 +126,7 @@ try {
   const optionsPayload = {
     ok: true, data: {
       available: true, actor: { name: "Hero", hp: 100, mhp: 100, mp: 3, mmp: 60, tp: 0 },
-      commands: [], items: [], enemy_targets: [{ target_index: 0, battler_index: 0, name: "Slime" }],
+      commands: [{ index: 0, action: "skill", symbol: "skill", occurrence: 0, enabled: true }], items: [], enemy_targets: [{ target_index: 0, battler_index: 0, name: "Slime" }],
       skill_groups: [{ action: "skill", label: "Skills", skills: [{ index: 0, name: "Fireball", mp_cost: 20, tp_cost: 0, usable_now: false }] }],
     },
   };
@@ -136,6 +136,21 @@ try {
   const missing = battleAction("skill", 7, 0, 0, 8000);
   await answerNextQuery(optionsPayload);
   await assert.rejects(missing, /skill_index 7 does not exist/, "an out-of-range skill index must name the real list");
+  const absentMagic = battleAction("magic", 0, 0, 0, 8000);
+  await answerNextQuery(optionsPayload);
+  await assert.rejects(absentMagic, /no "magic" command/, "one skill type must not invent a second magic command");
+  const disabledItem = battleAction("item", 0, 0, 0, 8000);
+  await answerNextQuery({ ok: true, data: { ...optionsPayload.data, commands: [{ index: 0, action: "item", symbol: "item", occurrence: 0, enabled: false }] } });
+  await assert.rejects(disabledItem, /"item" command is disabled/, "disabled actor commands must be rejected before confirmation");
+  const charging = battleAction("skill", 0, 0, 0, 8000);
+  await answerNextQuery({ ok: true, data: { available: false, reason: "no acting battler ready" } });
+  await assert.rejects(charging, /no acting battler ready/, "ATB charge must not fall back to a different actor");
+  const disabledCursorState = await writeJson(path.join(runtime, "state"), "state-disabled-command.json", {
+    ...base, frame: 131, updated_at: now(), scene: { name: "Scene_Battle", windows: [{ class: "Window_ActorCommand", active: true, index: 0, item_max: 1, col_max: 1, current_symbol: "item", current_enabled: false }] },
+    battle: { active: true },
+  });
+  await assert.rejects(selectCommandSymbol("item"), /disabled/, "current command enablement must be enforced even if a stale options query said yes");
+  await fs.unlink(disabledCursorState);
   await fs.unlink(battleState);
   const corpseState = await writeJson(path.join(runtime, "state"), "state-corpse.json", {
     ...base, frame: 135, updated_at: now(), scene: {
@@ -146,9 +161,67 @@ try {
     party: { gold: 0, members: [{ name: "Hero", hp: 100, mhp: 100, mp: 30, mmp: 60, tp: 0 }] },
     battle: { active: true, turn: 5, enemies: [{ name: "Slime", hp: 0, mhp: 50, dead: true }, { name: "Bat", hp: 30, mhp: 30, dead: false }] },
   });
-  await assert.rejects(battleAction("attack", 0, 0, 0, 8000), /already dead/, "a dead enemy_index must be refused instead of silently retargeting");
-  await assert.rejects(battleAction("attack", 0, 0, 9, 8000), /enemy_index 9 does not exist/);
+  const targetOptions = { ok: true, data: { ...optionsPayload.data, commands: [{ index: 0, action: "attack", symbol: "attack", occurrence: 0, enabled: true }], enemy_targets: [{ battler_index: 1, target_index: 0, name: "Bat" }] } };
+  const corpse = battleAction("attack", 0, 0, 0, 8000);
+  await answerNextQuery(targetOptions);
+  await assert.rejects(corpse, /already dead/, "a dead enemy_index must be refused instead of silently retargeting");
+  const nonexistentTarget = battleAction("attack", 0, 0, 9, 8000);
+  await answerNextQuery(targetOptions);
+  await assert.rejects(nonexistentTarget, /enemy_index 9 does not exist/);
+  const unselectableTarget = battleAction("attack", 0, 0, 1, 8000);
+  await answerNextQuery({ ok: true, data: { ...targetOptions.data, enemy_targets: [] } });
+  await assert.rejects(unselectableTarget, /not targetable/, "the target index must follow the game's alive_members list");
   await fs.unlink(corpseState);
+  const guardState = await writeJson(path.join(runtime, "state"), "state-guard.json", {
+    ...base, frame: 140, updated_at: now(), scene: { name: "Scene_Battle", windows: [{ class: "Window_ActorCommand", active: true, index: 0, item_max: 1, col_max: 1, current_symbol: "guard", current_enabled: true }] },
+    message: { busy: false, choices: [] }, party: { members: [{ name: "Hero", hp: 100, mhp: 100 }] },
+    battle: { active: true, turn: 5, enemies: [{ name: "Bat", hp: 30, dead: false }] },
+  });
+  const guard = battleAction("guard", 0, 0, 0, 8000);
+  await answerNextQuery({ ok: true, data: { available: true, commands: [{ action: "guard", symbol: "guard", occurrence: 0, enabled: true }], enemy_targets: [] } });
+  const guardConfirm = await answerNextQuery({ ok: true, frame: 141 });
+  assert.match(guardConfirm, /confirm:1/);
+  const guardResult = await guard;
+  assert.equal(guardResult.ok, true);
+  assert.equal(guardResult.turn_before, guardResult.turn_after, "a reopened command window can mean another action slot; turn need not change");
+  assert.match(guardResult.message, /one battle input accepted/);
+  await fs.unlink(guardState);
+  const resolvingState = await writeJson(path.join(runtime, "state"), "state-resolving.json", {
+    ...base, frame: 145, updated_at: now(), scene: { name: "Scene_Battle", windows: [{ class: "Window_ActorCommand", active: true, index: 0, item_max: 1, col_max: 1, current_symbol: "guard", current_enabled: true }] },
+    message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] },
+    battle: { active: true, turn: 5, enemies: [{ name: "Bat", hp: 30, dead: false }] },
+  });
+  const resolving = battleAction("guard", 0, 0, 0, 8000);
+  await answerNextQuery({ ok: true, data: { available: true, commands: [{ action: "guard", symbol: "guard", occurrence: 0, enabled: true }] } });
+  await answerNextQuery({ ok: true, frame: 146 });
+  const resolvingAnimation = await writeJson(path.join(runtime, "state"), "state-resolving-animation.json", {
+    ...base, frame: 147, updated_at: now(), scene: { name: "Scene_Battle", windows: [] },
+    message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] },
+    battle: { active: true, turn: 5, enemies: [{ name: "Bat", hp: 30, dead: false }] },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 2300));
+  const settledState = await writeJson(path.join(runtime, "state"), "state-resolving-settled.json", {
+    ...base, frame: 148, updated_at: now(), scene: { name: "Scene_Map", windows: [] },
+    message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] }, battle: { active: false, turn: 6, enemies: [] },
+  });
+  const resolvingResult = await resolving;
+  assert.equal(resolvingResult.battle_ended, true, "battle settlement after two seconds must not be skipped");
+  await Promise.all([resolvingState, resolvingAnimation, settledState].map((file) => fs.unlink(file)));
+  const equipmentState = await writeJson(path.join(runtime, "state"), "state-equipment.json", {
+    ...base, frame: 150, updated_at: now(), scene: { name: "Scene_Battle", windows: [{ class: "Window_ActorCommand", active: true, index: 0, item_max: 1, col_max: 1, current_symbol: "equip_change", current_enabled: true }] },
+    message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] }, battle: { active: true, turn: 5, enemies: [] },
+  });
+  const equip = battleAction("equip_change", 0, 0, 0, 8000);
+  await answerNextQuery({ ok: true, data: { available: true, commands: [{ action: "equip_change", symbol: "equip_change", occurrence: 0, enabled: true }] } });
+  await answerNextQuery({ ok: true, frame: 151 });
+  const equipmentScene = await writeJson(path.join(runtime, "state"), "state-equipment-scene.json", {
+    ...base, frame: 152, updated_at: now(), scene: { name: "Scene_Equip", windows: [] },
+    party: { members: [{ name: "Hero", hp: 100 }] }, battle: { active: true, turn: 5, enemies: [] },
+  });
+  const equipResult = await equip;
+  assert.equal(equipResult.ok, true);
+  assert.equal(equipResult.battle_ended, false, "opening equipment must not be described as winning the battle");
+  await Promise.all([equipmentState, equipmentScene].map((file) => fs.unlink(file)));
   const noTurnState = await writeJson(path.join(runtime, "state"), "state-noturn.json", {
     ...base, frame: 136, updated_at: now(), scene: { name: "Scene_Map" }, battle: { active: false, turn: null },
   }, 3000);
@@ -156,6 +229,14 @@ try {
   assert.equal(notInBattle.ok, false);
   assert.equal(notInBattle.turn_before, null, "a missing turn must not be reported as turn 0");
   await fs.unlink(noTurnState);
+  const menuDisabledState = await writeJson(path.join(runtime, "state"), "state-menu-disabled.json", {
+    ...base, frame: 137, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: true },
+    message: { busy: false }, system: { menu_disabled: true }, battle: { active: false },
+  }, 3000);
+  await assert.rejects(triggerSave(0), /菜单被剧情禁用/, "story-locked menus must not be misreported as a missing command window");
+  await assert.rejects(triggerLoad(0), /菜单被剧情禁用/, "story-locked menus must not be misreported as a missing load command");
+  assert.ok(!(await buildSituation()).suggested_actions.includes("open_menu"));
+  await fs.unlink(menuDisabledState);
   const evalState = await writeJson(path.join(runtime, "state"), "state-eval.json", {
     ...base, frame: 122, updated_at: now(), scene: { name: "Scene_Map" },
     player: { x: 5, y: 9 }, map: { id: 104 },
@@ -276,15 +357,48 @@ try {
     const confirmCommand = await answerNextQuery({ ok: true, frame: 515 });
     assert.match(confirmCommand, /confirm:1/, "the requested choice must be confirmed after the cursor reaches it");
     completedChoiceState = await writeJson(path.join(runtime, "state"), "state-choice-completed.json", {
-      ...base, frame: 516, updated_at: now(), scene: { name: "Scene_Map", windows: [] },
+      ...base, frame: 516, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: true },
       message: { busy: false, text: "", choices: [] },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    const nextLine = await writeJson(path.join(runtime, "state"), "state-choice-next.json", {
+      ...base, frame: 517, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: true },
+      message: { busy: true, text: "Next line", choices: [] },
+    });
+    const nextConfirm = await answerNextQuery({ ok: true, frame: 518 });
+    assert.match(nextConfirm, /confirm:1/, "a new line after a choice gap must also be advanced");
+    await fs.unlink(nextLine);
+    await writeJson(path.join(runtime, "state"), "state-choice-end.json", {
+      ...base, frame: 519, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: false }, message: { busy: false, text: "", choices: [] },
     });
   })();
   const [choiceResult] = await Promise.all([chooseFirst, choiceResponder]);
   assert.equal(choiceResult.ok, true);
   assert.equal(choiceResult.dialogue_ended, true);
-  assert.equal(choiceResult.lines_advanced, 1);
+  assert.equal(choiceResult.lines_advanced, 2);
   await Promise.all([choiceState, openedChoiceState, selectedChoiceState, completedChoiceState].map((file) => fs.unlink(file)));
+  await fs.unlink(path.join(runtime, "state", "state-choice-end.json"));
+  const disabledChoiceState = await writeJson(path.join(runtime, "state"), "state-disabled-choice.json", {
+    ...base, frame: 520, updated_at: now(), scene: { name: "Scene_Map", windows: [{ class: "Window_ChoiceList", active: true, index: 0, item_max: 2, col_max: 1, current_enabled: false }] },
+    message: { busy: true, choices: ["No", "Yes"] },
+  });
+  await assert.rejects(advanceDialogue(0), /choice_index 0 is disabled/, "a disabled choice must not be reported as selected");
+  await fs.unlink(disabledChoiceState);
+  const stalledDialogueState = await writeJson(path.join(runtime, "state"), "state-stalled-dialogue.json", {
+    ...base, frame: 521, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: true },
+    message: { busy: true, text: "Before event wait", choices: [] },
+  });
+  const stalledStart = Date.now();
+  const stalledDialogue = advanceDialogue(undefined, 1, 30000);
+  await answerNextQuery({ ok: true, frame: 522 });
+  const stalledEventState = await writeJson(path.join(runtime, "state"), "state-stalled-event.json", {
+    ...base, frame: 523, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: true },
+    message: { busy: false, text: "", choices: [] },
+  });
+  const stalledResult = await stalledDialogue;
+  assert.equal(stalledResult.dialogue_ended, false, "a running event can have a long gap between messages");
+  assert.ok(Date.now() - stalledStart < 5000, "a running event must not occupy the full 30-second call timeout");
+  await Promise.all([stalledDialogueState, stalledEventState].map((file) => fs.unlink(file)));
 
   // 模拟移动事件离开快照范围，区分目标丢失与真实对话响应。
   for (const scenario of ["approach-disappeared", "confirm-disappeared", "dialogue"]) {
@@ -543,6 +657,38 @@ try {
 
   await fs.writeFile(path.join(game, "Game.exe"), "not-the-original-engine", "ascii");
   await assert.rejects(() => launchGame(1000), /integrity check failed/);
+
+  // Game selection: bs1 stays the default so existing installs keep working; bs2 gets
+  // its own copy, fingerprint and memory, and the choice survives a server restart.
+  const { activeGame, gameDir, memoryDir, expectedExeSha256, GAME_PROFILES } = await import("../dist/config.js");
+  const { listGames, selectGame } = await import("../dist/game.js");
+  assert.equal(activeGame(), "bs1");
+  assert.equal(gameDir(), game);
+  assert.equal((await listGames()).games.find((entry) => entry.id === "bs2").prepared, false);
+  // A live bs1 bridge (this test process stands in for Game.exe) must block switching.
+  await prepareBridgeRuntime(token);
+  await writeJson(path.join(runtime, "info"), "info-running.json", { ...base, capabilities: [] });
+  await writeJson(path.join(runtime, "state"), "state-running.json", { ...base, updated_at: now(), scene: { name: "Scene_Map", windows: [] } });
+  await assert.rejects(selectGame("bs2"), /still running/, "selectGame must refuse while the bridge reports a live game");
+  // Once the process is gone (a dead PID in fresh snapshots) the switch goes through.
+  await prepareBridgeRuntime(token);
+  await writeJson(path.join(runtime, "info"), "info-exited.json", { ...base, pid: 0x7ffffffe, capabilities: [] });
+  await writeJson(path.join(runtime, "state"), "state-exited.json", { ...base, pid: 0x7ffffffe, updated_at: now(), scene: { name: "Scene_Map", windows: [] } });
+  const switched = await selectGame("bs2");
+  assert.equal(switched.switched, true); assert.equal(switched.previous, "bs1"); assert.equal(switched.active, "bs2");
+  assert.equal(activeGame(), "bs2");
+  assert.equal(gameDir(), path.join(root, "game2"));
+  assert.equal(memoryDir(), path.join(root, "memory-bs2"));
+  assert.equal(expectedExeSha256(), GAME_PROFILES.bs2.knownExeSha256);
+  assert.equal((await fs.readFile(path.join(root, "active_game.txt"), "ascii")).trim(), "bs2");
+  assert.equal((await readScratchpad()).notes, "", "bs2 must not see bs1's scratchpad");
+  await appendSessionLog({ event_type: "observation", summary: "bs2-only" });
+  assert.equal((await readSessionLog(1))[0].summary, "bs2-only");
+  assert.notEqual((await readSessionLog(1))[0].session_id, recentLog.at(-1).session_id, "missing scratchpads must not reuse a session id across games");
+  await assert.rejects(() => launchGame(1000), /ENOENT|no such file/i);
+  assert.equal((await selectGame("bs2")).switched, false);
+  assert.equal((await selectGame("bs1")).active, "bs1");
+  assert.equal(gameDir(), game);
 
   console.log("Bridge generation, corruption recovery, stale-state rejection, runtime archival, and launch integrity: OK");
 } finally {
