@@ -132,7 +132,18 @@ try {
   };
   const refusal = battleAction("skill", 0, 0, 0, 8000);
   await answerNextQuery(optionsPayload);
-  await assert.rejects(refusal, /Fireball.*cannot be used right now/s, "an unaffordable skill must be refused, not silently swallowed");
+  await assert.rejects(refusal, /Fireball.*cannot be used right now.*insufficient MP/s, "an unaffordable skill must be refused, not silently swallowed");
+  const unusableSkill = battleAction("skill", 0, 0, 0, 8000);
+  await answerNextQuery({ ok: true, data: {
+    ...optionsPayload.data, actor: { name: "Hero", mp: 80, mmp: 100, tp: 20 },
+    skill_groups: [{ action: "skill", label: "Skills", skills: [{ name: "Decapitation", mp_cost: 10, tp_cost: 0, usable_now: false }] }],
+  } });
+  await assert.rejects(unusableSkill, (error) => {
+    assert.match(error.message, /Decapitation.*cannot be used right now.*costs 10 MP \/ 0 TP.*80\/100 MP and 20 TP/s);
+    assert.doesNotMatch(error.message, /insufficient|recover TP|cooldown|sealed/i, "sufficient resources do not establish why the skill is disabled");
+    return true;
+  });
+  assert.deepEqual(await fs.readdir(path.join(runtime, "inbox")), [], "an unusable skill must not send any battle input");
   const missing = battleAction("skill", 7, 0, 0, 8000);
   await answerNextQuery(optionsPayload);
   await assert.rejects(missing, /skill_index 7 does not exist/, "an out-of-range skill index must name the real list");
@@ -200,13 +211,60 @@ try {
     battle: { active: true, turn: 5, enemies: [{ name: "Bat", hp: 30, dead: false }] },
   });
   await new Promise((resolve) => setTimeout(resolve, 2300));
+  const victoryState = await writeJson(path.join(runtime, "state"), "state-resolving-victory.json", {
+    ...base, frame: 148, updated_at: now(), scene: { name: "Scene_Battle", windows: [] },
+    message: { busy: true, text: "Victory" }, party: { members: [{ name: "Hero", hp: 100 }] },
+    battle: { active: true, turn: 6, enemies: [{ name: "Bat", hp: 0, dead: true }] },
+  });
+  const settlementConfirm = await answerNextQuery({ ok: true, frame: 149 });
+  assert.match(settlementConfirm, /confirm:1;wait:20/, "victory settlement must still receive confirmation");
   const settledState = await writeJson(path.join(runtime, "state"), "state-resolving-settled.json", {
-    ...base, frame: 148, updated_at: now(), scene: { name: "Scene_Map", windows: [] },
+    ...base, frame: 150, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: false },
     message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] }, battle: { active: false, turn: 6, enemies: [] },
   });
   const resolvingResult = await resolving;
   assert.equal(resolvingResult.battle_ended, true, "battle settlement after two seconds must not be skipped");
-  await Promise.all([resolvingState, resolvingAnimation, settledState].map((file) => fs.unlink(file)));
+  assert.equal(resolvingResult.battle_outcome, "victory", "the observed victory must survive the troop being cleared on the map");
+  assert.equal(resolvingResult.message_pending, false);
+  await Promise.all([resolvingState, resolvingAnimation, victoryState, settledState].map((file) => fs.unlink(file)));
+  // 结局与待处理事件独立报告，阵亡和逃跑消息不接受额外确认。
+  for (const ending of [
+    { action: "guard", outcome: "defeat", scene: "Scene_Battle", active: true, hp: 0, text: "Defeat", running: false },
+    { action: "guard", outcome: "defeat", scene: "Scene_Map", active: false, hp: 100, text: "YOU DIED", running: true },
+    { action: "flee", outcome: "escape", scene: "Scene_Map", active: false, hp: 100, text: "Hero escaped!", running: true },
+    { action: "guard", outcome: "unknown", scene: "Scene_Map", active: false, hp: 100, text: "Event", running: true },
+  ]) {
+    const command = { action: ending.action, symbol: ending.action === "flee" ? "escape" : "guard", occurrence: 0, enabled: true };
+    const startingState = await writeJson(path.join(runtime, "state"), "state-ending-start.json", {
+      ...base, frame: 150, updated_at: now(), scene: { name: "Scene_Battle", windows: [{ class: "Window_ActorCommand", active: true, current_symbol: command.symbol }] },
+      message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] },
+      battle: { active: true, turn: 5, enemies: [{ name: "Bat", hp: 44, mhp: 50, dead: false }] },
+    });
+    const endingAction = battleAction(ending.action, 0, 0, 0, 8000);
+    await answerNextQuery({ ok: true, data: { available: true, commands: [command] } });
+    await answerNextQuery({ ok: true, frame: 151 });
+    const endingState = await writeJson(path.join(runtime, "state"), "state-ending-result.json", {
+      ...base, frame: 152, updated_at: now(), scene: { name: ending.scene, windows: [], interpreter_running: ending.running },
+      message: { busy: true, text: ending.text }, party: { members: [{ name: "Hero", hp: ending.hp }] },
+      battle: { active: ending.active, turn: 6, enemies: [{ name: "Bat", hp: 44, mhp: 50, dead: false }] },
+    });
+    const endingResult = await endingAction;
+    assert.equal(endingResult.ok, true);
+    assert.equal(endingResult.battle_outcome, ending.outcome);
+    assert.equal(endingResult.battle_ended, !ending.active);
+    assert.equal(endingResult.message_pending, true);
+    assert.equal(endingResult.interpreter_running, ending.running);
+    assert.match(endingResult.message, /message_pending=true/);
+    assert.doesNotMatch(endingResult.message, /settlement was advanced/);
+    if (ending.outcome === "defeat") assert.match(endingResult.message, /party was defeated/);
+    if (ending.active) {
+      const alreadyDefeated = await battleAction("guard", 0, 0, 0, 8000);
+      assert.equal(alreadyDefeated.ok, false);
+      assert.equal(alreadyDefeated.battle_outcome, "defeat");
+    }
+    assert.deepEqual(await fs.readdir(path.join(runtime, "inbox")), [], "death and map messages must not receive automatic input");
+    await Promise.all([startingState, endingState].map((file) => fs.unlink(file)));
+  }
   const equipmentState = await writeJson(path.join(runtime, "state"), "state-equipment.json", {
     ...base, frame: 150, updated_at: now(), scene: { name: "Scene_Battle", windows: [{ class: "Window_ActorCommand", active: true, index: 0, item_max: 1, col_max: 1, current_symbol: "equip_change", current_enabled: true }] },
     message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] }, battle: { active: true, turn: 5, enemies: [] },

@@ -4,6 +4,8 @@ export type BattleActionType = "attack" | "skill" | "magic" | "guard" | "item" |
 export interface BattleActionResult {
   ok: boolean; action: BattleActionType; turn_before: number | null; turn_after: number | null;
   battle_still_active: boolean; battle_ended: boolean;
+  battle_outcome: "victory" | "escape" | "defeat" | "unknown";
+  message_pending: boolean; interpreter_running: boolean;
   enemies_after: Array<{ name: string; hp: number; mhp: number; dead: boolean }>;
   party_after: Array<{ name: string; hp: number; mhp: number; mp: number; mmp: number; tp: number }>; message: string;
 }
@@ -23,6 +25,19 @@ export const allEnemiesDefeated = (state: Record<string, unknown>): boolean => {
     && visibleEnemies.every((enemy) => enemy.dead === true || Number(enemy.hp || 0) <= 0);
 };
 
+function battleOutcomeOf(state: Record<string, unknown>, action?: BattleActionType): BattleActionResult["battle_outcome"] {
+  const party = objectValue(state.party);
+  const members = (Array.isArray(party.members) ? party.members : []).map(objectValue);
+  const scene = String(objectValue(state.scene).name || "");
+  if ((members.length > 0 && members.every((member) => Number(member.hp) <= 0))
+    || scene === "Scene_Gameover" || /\bYOU DIED\b/i.test(String(objectValue(state.message).text || ""))) return "defeat";
+  if (allEnemiesDefeated(state)) return "victory";
+  if (action === "flee" && objectValue(state.battle).active === false && scene === "Scene_Map"
+    && members.some((member) => Number(member.hp) > 0)
+    && enemiesOf(state).some((enemy) => enemy.hidden !== true && enemy.dead !== true && Number(enemy.hp) > 0)) return "escape";
+  return "unknown";
+}
+
 async function cursor(action: "confirm" | "cancel", waitFrames: number, timeoutMs: number) {
   await sendSequence([{ action }, { wait_frames: waitFrames }], timeoutMs);
   return readState();
@@ -30,11 +45,7 @@ async function cursor(action: "confirm" | "cancel", waitFrames: number, timeoutM
 
 const readStateSafe = async (): Promise<Record<string, unknown> | null> => { try { return await readState(); } catch { return null; } };
 
-// Back out of any sub-window until the actor command window is active; when the party
-// command window (fight/escape) shows up first, pick "fight" to reach the actor commands.
-// Death animations, phase transitions and victory settlement can hold the engine for a
-// long time with no input window on screen. That is not a failure — wait it out for the
-// caller's whole budget and report "battle over" rather than erroring mid-fight.
+// 回到角色指令窗；转场或演出期间等待，胜负已定时停止寻找输入窗口。
 async function ensureActorCommandWindow(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   let state = await readStateSafe();
@@ -42,6 +53,7 @@ async function ensureActorCommandWindow(timeoutMs: number): Promise<boolean> {
     const battleActive = objectValue(state?.battle ?? {}).active === true;
     const scene = String(objectValue(state?.scene ?? {}).name || "");
     if (state && (!battleActive || (scene && scene !== "Scene_Battle"))) return false;
+    if (state && battleOutcomeOf(state) !== "unknown") return false;
     // Boss fights open with dialogue, and the engine holds the input windows closed until
     // it is dismissed. Waiting it out would burn the whole budget for nothing.
     const message = objectValue(state?.message ?? {});
@@ -97,9 +109,7 @@ async function commitConfirm(timeoutMs: number): Promise<Record<string, unknown>
   return readStateSafe();
 }
 
-// RPG Maker answers a choice the actor cannot pay for with a buzzer: the cursor stays put
-// and nothing is committed. Checking usability up front means the refusal is reported as a
-// clear error instead of costing a turn of real input, and the caller learns why.
+// 不可用的技能只会触发蜂鸣；资源充足也可能被冷却、封印等条件禁用。
 function preflight(options: Record<string, unknown>, action: BattleActionType, skillIndex: number, itemIndex: number): Record<string, unknown> {
   if (options.available !== true) throw new Error(`battle options unavailable: ${String(options.reason || options.error || "no actor is ready")}`);
   const commands = (Array.isArray(options.commands) ? options.commands : []).map(objectValue);
@@ -123,7 +133,13 @@ function preflight(options: Record<string, unknown>, action: BattleActionType, s
   const skills = (Array.isArray(group.skills) ? group.skills : []).map(objectValue);
   const entry = skills[skillIndex];
   if (!entry) throw new Error(`skill_index ${skillIndex} does not exist in "${group.label}"; it holds ${skills.length} entries (${skills.map((skill, index) => `${index}=${skill.name}`).join(", ") || "none"})`);
-  if (entry.usable_now !== true) throw new Error(`"${entry.name}" cannot be used right now: it costs ${entry.mp_cost} MP / ${entry.tp_cost} TP and ${purse}. Pick another skill, or attack to recover TP`);
+  if (entry.usable_now !== true) {
+    const shortfalls = [];
+    if (Number(entry.mp_cost) > Number(actor.mp)) shortfalls.push("insufficient MP");
+    if (Number(entry.tp_cost) > Number(actor.tp)) shortfalls.push("insufficient TP");
+    const reason = shortfalls.length > 0 ? ` (${shortfalls.join(" and ")})` : "";
+    throw new Error(`"${entry.name}" cannot be used right now${reason}: it costs ${entry.mp_cost} MP / ${entry.tp_cost} TP and ${purse}. Call black_souls_battle_options to see what is usable`);
+  }
   return command;
 }
 
@@ -159,6 +175,7 @@ async function advanceBattleEnd(timeoutMs: number): Promise<Record<string, unkno
   while (Date.now() < deadline) {
     const scene = String(objectValue(state?.scene ?? {}).name || "");
     if (state && scene && scene !== "Scene_Battle") return state;
+    if (!state || battleOutcomeOf(state) !== "victory") return state;
     await sendSequence([{ action: "confirm" }, { wait_frames: 20 }], 8000).catch(() => undefined);
     await sleep(400);
     state = await readStateSafe();
@@ -169,50 +186,46 @@ async function advanceBattleEnd(timeoutMs: number): Promise<Record<string, unkno
 export async function battleAction(action: BattleActionType, skillIndex = 0, itemIndex = 0, enemyIndex = 0, timeoutMs = 40000): Promise<BattleActionResult> {
   const before = await readState();
   const battleBefore = objectValue(before.battle);
-  if (!battleBefore.active) return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleBefore), battle_still_active: false, battle_ended: false, enemies_after: [], party_after: [], message: "not in battle" };
-  if (String(objectValue(before.scene).name || "") !== "Scene_Battle") return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleBefore), battle_still_active: true, battle_ended: false, enemies_after: [], party_after: [], message: "battle is active but another scene owns input" };
+  if (!battleBefore.active) return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleBefore), battle_still_active: false, battle_ended: false, battle_outcome: "unknown", message_pending: objectValue(before.message).busy === true, interpreter_running: objectValue(before.scene).interpreter_running === true, enemies_after: [], party_after: [], message: "not in battle" };
+  if (String(objectValue(before.scene).name || "") !== "Scene_Battle") return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleBefore), battle_still_active: true, battle_ended: false, battle_outcome: "unknown", message_pending: objectValue(before.message).busy === true, interpreter_running: objectValue(before.scene).interpreter_running === true, enemies_after: [], party_after: [], message: "battle is active but another scene owns input" };
   const started = Date.now();
   const remaining = () => Math.max(2000, timeoutMs - (Date.now() - started));
   let inputMayHaveCommitted = false;
 
   try {
-    const inputReady = await ensureActorCommandWindow(remaining());
-    if (!inputReady) {
-      const ended = await advanceBattleEnd(remaining());
-      const endBattle = objectValue(ended?.battle ?? {});
-      return { ok: false, action, turn_before: turnOf(battleBefore), turn_after: turnOf(endBattle), battle_still_active: Boolean(endBattle.active), battle_ended: true, enemies_after: [], party_after: [], message: "the battle ended before this command could be entered; no input was submitted" };
-    }
-    const options = objectValue(await sendQuery("battle_options", "", 8000));
-    const command = preflight(options, action, skillIndex, itemIndex);
-    let targetSlot = action === "attack" ? targetSlotFor(before, options, enemyIndex) : null;
-    await selectCommandSymbol(String(command.symbol), Number(command.occurrence), remaining());
+    if (await ensureActorCommandWindow(remaining())) {
+      const options = objectValue(await sendQuery("battle_options", "", 8000));
+      const command = preflight(options, action, skillIndex, itemIndex);
+      let targetSlot = action === "attack" ? targetSlotFor(before, options, enemyIndex) : null;
+      await selectCommandSymbol(String(command.symbol), Number(command.occurrence), remaining());
 
-    inputMayHaveCommitted = true;
-    let state = await commitConfirm(remaining());
-    let window = state ? activeWindowOf(state) : null;
-    let selectionOpened = false;
-    if (window && (window.class === "Window_BattleSkill" || window.class === "Window_BattleItem")) {
-      selectionOpened = true;
-      const submenu = window.class;
-      const wanted = submenu === "Window_BattleSkill" ? skillIndex : itemIndex;
-      await selectWindowIndex(wanted, remaining());
-      state = await confirmAndLeave(submenu, `entry ${wanted} of ${submenu}`, remaining());
-      window = state ? activeWindowOf(state) : null;
-    }
-    if (window && window.class === "Window_BattleEnemy") {
-      selectionOpened = true;
-      targetSlot ??= targetSlotFor(state ?? before, options, enemyIndex);
-      await selectWindowIndex(targetSlot, remaining());
-      state = await confirmAndLeave("Window_BattleEnemy", `target ${targetSlot}`, remaining());
-      window = state ? activeWindowOf(state) : null;
-    }
-    if (window && window.class === "Window_BattleActor") {
-      selectionOpened = true;
-      state = await confirmAndLeave("Window_BattleActor", "ally target", remaining());
-      window = state ? activeWindowOf(state) : null;
-    }
-    if (window?.class === "Window_ActorCommand" && !selectionOpened && ["attack", "skill", "magic", "item"].includes(action)) {
-      throw new Error(`${action} did not open a selection window or advance input; read state before retrying`);
+      inputMayHaveCommitted = true;
+      let state = await commitConfirm(remaining());
+      let window = state ? activeWindowOf(state) : null;
+      let selectionOpened = false;
+      if (window && (window.class === "Window_BattleSkill" || window.class === "Window_BattleItem")) {
+        selectionOpened = true;
+        const submenu = window.class;
+        const wanted = submenu === "Window_BattleSkill" ? skillIndex : itemIndex;
+        await selectWindowIndex(wanted, remaining());
+        state = await confirmAndLeave(submenu, `entry ${wanted} of ${submenu}`, remaining());
+        window = state ? activeWindowOf(state) : null;
+      }
+      if (window && window.class === "Window_BattleEnemy") {
+        selectionOpened = true;
+        targetSlot ??= targetSlotFor(state ?? before, options, enemyIndex);
+        await selectWindowIndex(targetSlot, remaining());
+        state = await confirmAndLeave("Window_BattleEnemy", `target ${targetSlot}`, remaining());
+        window = state ? activeWindowOf(state) : null;
+      }
+      if (window && window.class === "Window_BattleActor") {
+        selectionOpened = true;
+        state = await confirmAndLeave("Window_BattleActor", "ally target", remaining());
+        window = state ? activeWindowOf(state) : null;
+      }
+      if (window?.class === "Window_ActorCommand" && !selectionOpened && ["attack", "skill", "magic", "item"].includes(action)) {
+        throw new Error(`${action} did not open a selection window or advance input; read state before retrying`);
+      }
     }
   } catch (error) {
     const rollback = await rollbackToCommandWindow(8000);
@@ -232,42 +245,40 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
   // the turn resolves; wait for that window or the battle ending, not a fixed delay.
   const deadline = Date.now() + remaining();
   let after = await readStateSafe();
-  let ended = false;
+  let outcome: BattleActionResult["battle_outcome"] = "unknown";
   while (Date.now() < deadline) {
     if (after) {
       const battle = objectValue(after.battle);
       const scene = String(objectValue(after.scene).name || "");
-      if (!battle.active || scene !== "Scene_Battle") { ended = !battle.active; break; }
-      // Victory settlement keeps both Scene_Battle and $game_party.in_battle true
-      // until its text is confirmed. Detect the troop's defeated state here so the
-      // caller advances those screens instead of waiting for the full timeout.
-      if (allEnemiesDefeated(after)) { ended = true; break; }
-      const party = objectValue(after.party);
-      const members = (Array.isArray(party.members) ? party.members : []).map(objectValue);
-      // Defeat text can leave Scene_Battle and $game_party.in_battle true until the
-      // player confirms it. Waiting only for a scene change burns the whole timeout
-      // and returns a misleading "battle still active" result after everyone is dead.
-      if (members.length > 0 && members.every((member) => Number(member.hp || 0) <= 0)) { ended = true; break; }
+      outcome = battleOutcomeOf(after, action);
+      if (!battle.active || scene !== "Scene_Battle" || outcome !== "unknown") break;
       const active = activeWindowOf(after);
       if (active && (active.class === "Window_ActorCommand" || active.class === "Window_PartyCommand")) break;
     }
     await sleep(400);
     after = await readStateSafe();
   }
-  if (ended) after = await advanceBattleEnd(Math.max(15000, remaining()));
+  if (outcome === "victory") after = await advanceBattleEnd(Math.max(15000, remaining()));
   if (!after) after = await readState();
+  const finalOutcome = battleOutcomeOf(after, action);
+  if (finalOutcome !== "unknown") outcome = finalOutcome;
 
   const battleAfter = objectValue(after.battle);
   const party = objectValue(after.party);
   const stillActive = Boolean(battleAfter.active);
+  const messagePending = objectValue(after.message).busy === true;
+  const interpreterRunning = objectValue(after.scene).interpreter_running === true;
   const enemies = (stillActive ? enemiesOf(after) : []).map((enemy) => ({ name: String(enemy.name || ""), hp: Number(enemy.hp || 0), mhp: Number(enemy.mhp || 0), dead: Boolean(enemy.dead) }));
   const members = (Array.isArray(party.members) ? party.members : []).map(objectValue).map((member) => ({ name: String(member.name || ""), hp: Number(member.hp || 0), mhp: Number(member.mhp || 0), mp: Number(member.mp || 0), mmp: Number(member.mmp || 0), tp: Number(member.tp || 0) }));
-  const message = !stillActive
-    ? `the battle ended and settlement was advanced; current scene is ${String(objectValue(after.scene).name || "unknown")}`
-    : action === "flee"
-      ? "escape input accepted; the battle continues (escape may have failed)"
-      : action === "equip_change"
-        ? "equipment command accepted; configure equipment before returning to battle"
-        : "one battle input accepted; execution or further action selection may still be pending";
-  return { ok: true, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleAfter), battle_still_active: stillActive, battle_ended: !stillActive, enemies_after: enemies, party_after: members, message };
+  let message = action === "flee"
+    ? "escape input accepted; the battle continues (escape may have failed)"
+    : action === "equip_change"
+      ? "equipment command accepted; configure equipment before returning to battle"
+      : "one battle input accepted; execution or further action selection may still be pending";
+  if (outcome === "defeat") message = "the party was defeated";
+  else if (outcome === "victory") message = stillActive ? "victory detected; settlement is still pending" : "victory; the battle ended";
+  else if (!stillActive) message = outcome === "escape" ? "escape succeeded; the battle ended" : "the battle ended; its outcome is unknown";
+  if (!inputMayHaveCommitted) message += "; no input was submitted";
+  if (!stillActive || outcome !== "unknown") message += `; current scene is ${String(objectValue(after.scene).name || "unknown")}; message_pending=${messagePending}; interpreter_running=${interpreterRunning}`;
+  return { ok: inputMayHaveCommitted, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleAfter), battle_still_active: stillActive, battle_ended: !stillActive, battle_outcome: outcome, message_pending: messagePending, interpreter_running: interpreterRunning, enemies_after: enemies, party_after: members, message };
 }
