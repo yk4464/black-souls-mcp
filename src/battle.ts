@@ -29,12 +29,11 @@ function battleOutcomeOf(state: Record<string, unknown>, action?: BattleActionTy
   const party = objectValue(state.party);
   const members = (Array.isArray(party.members) ? party.members : []).map(objectValue);
   const scene = String(objectValue(state.scene).name || "");
+  // YOU DIED 是 bs2 战败事件显示的文本；其他游戏的未识别战败事件会落到 unknown。
   if ((members.length > 0 && members.every((member) => Number(member.hp) <= 0))
     || scene === "Scene_Gameover" || /\bYOU DIED\b/i.test(String(objectValue(state.message).text || ""))) return "defeat";
   if (allEnemiesDefeated(state)) return "victory";
-  if (action === "flee" && objectValue(state.battle).active === false && scene === "Scene_Map"
-    && members.some((member) => Number(member.hp) > 0)
-    && enemiesOf(state).some((enemy) => enemy.hidden !== true && enemy.dead !== true && Number(enemy.hp) > 0)) return "escape";
+  if (action === "flee" && objectValue(state.battle).active === false) return "escape";
   return "unknown";
 }
 
@@ -278,7 +277,7 @@ export async function battleAction(action: BattleActionType, skillIndex = 0, ite
   if (outcome === "defeat") message = "the party was defeated";
   else if (outcome === "victory") message = stillActive ? "victory detected; settlement is still pending" : "victory; the battle ended";
   else if (!stillActive) message = outcome === "escape" ? "escape succeeded; the battle ended" : "the battle ended; its outcome is unknown";
-  if (!inputMayHaveCommitted) message += "; no input was submitted";
-  if (!stillActive || outcome !== "unknown") message += `; current scene is ${String(objectValue(after.scene).name || "unknown")}; message_pending=${messagePending}; interpreter_running=${interpreterRunning}`;
+  if (!inputMayHaveCommitted) message = "no input was submitted; read state before issuing another battle action";
+  if (!stillActive || outcome !== "unknown") message += `; current scene is ${String(objectValue(after.scene).name || "unknown")}`;
   return { ok: inputMayHaveCommitted, action, turn_before: turnOf(battleBefore), turn_after: turnOf(battleAfter), battle_still_active: stillActive, battle_ended: !stillActive, battle_outcome: outcome, message_pending: messagePending, interpreter_running: interpreterRunning, enemies_after: enemies, party_after: members, message };
 }

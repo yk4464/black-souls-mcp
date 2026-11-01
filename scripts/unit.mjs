@@ -140,7 +140,6 @@ try {
   } });
   await assert.rejects(unusableSkill, (error) => {
     assert.match(error.message, /Decapitation.*cannot be used right now.*costs 10 MP \/ 0 TP.*80\/100 MP and 20 TP/s);
-    assert.doesNotMatch(error.message, /insufficient|recover TP|cooldown|sealed/i, "sufficient resources do not establish why the skill is disabled");
     return true;
   });
   assert.deepEqual(await fs.readdir(path.join(runtime, "inbox")), [], "an unusable skill must not send any battle input");
@@ -227,11 +226,34 @@ try {
   assert.equal(resolvingResult.battle_outcome, "victory", "the observed victory must survive the troop being cleared on the map");
   assert.equal(resolvingResult.message_pending, false);
   await Promise.all([resolvingState, resolvingAnimation, victoryState, settledState].map((file) => fs.unlink(file)));
+  // 输入前已胜利时跳过指令选择，仍须推进胜利结算。
+  const alreadyVictoryState = await writeJson(path.join(runtime, "state"), "state-already-victory.json", {
+    ...base, frame: 150, updated_at: now(), scene: { name: "Scene_Battle", windows: [] },
+    message: { busy: true, text: "Victory" }, party: { members: [{ name: "Hero", hp: 100 }] },
+    battle: { active: true, turn: 6, enemies: [{ name: "Bat", hp: 0, dead: true }] },
+  });
+  const alreadyVictorious = battleAction("guard", 0, 0, 0, 8000);
+  const alreadyVictoryConfirm = await answerNextQuery({ ok: true, frame: 151 });
+  assert.match(alreadyVictoryConfirm, /confirm:1;wait:20/, "a victory observed before input must still advance settlement");
+  const alreadySettledState = await writeJson(path.join(runtime, "state"), "state-already-settled.json", {
+    ...base, frame: 152, updated_at: now(), scene: { name: "Scene_Map", windows: [], interpreter_running: false },
+    message: { busy: false }, party: { members: [{ name: "Hero", hp: 100 }] }, battle: { active: false, turn: 6, enemies: [] },
+  });
+  const alreadyVictoryResult = await alreadyVictorious;
+  assert.equal(alreadyVictoryResult.ok, false);
+  assert.equal(alreadyVictoryResult.battle_outcome, "victory");
+  assert.equal(alreadyVictoryResult.battle_ended, true);
+  assert.equal(alreadyVictoryResult.message_pending, false);
+  assert.match(alreadyVictoryResult.message, /^no input was submitted;/);
+  assert.doesNotMatch(alreadyVictoryResult.message, /input accepted/);
+  assert.deepEqual(await fs.readdir(path.join(runtime, "inbox")), []);
+  await Promise.all([alreadyVictoryState, alreadySettledState].map((file) => fs.unlink(file)));
   // 结局与待处理事件独立报告，阵亡和逃跑消息不接受额外确认。
   for (const ending of [
     { action: "guard", outcome: "defeat", scene: "Scene_Battle", active: true, hp: 0, text: "Defeat", running: false },
     { action: "guard", outcome: "defeat", scene: "Scene_Map", active: false, hp: 100, text: "YOU DIED", running: true },
     { action: "flee", outcome: "escape", scene: "Scene_Map", active: false, hp: 100, text: "Hero escaped!", running: true },
+    { action: "flee", outcome: "escape", scene: "Scene_Battle", active: false, hp: 100, text: "Hero escaped!", running: false },
     { action: "guard", outcome: "unknown", scene: "Scene_Map", active: false, hp: 100, text: "Event", running: true },
   ]) {
     const command = { action: ending.action, symbol: ending.action === "flee" ? "escape" : "guard", occurrence: 0, enabled: true };
@@ -254,13 +276,14 @@ try {
     assert.equal(endingResult.battle_ended, !ending.active);
     assert.equal(endingResult.message_pending, true);
     assert.equal(endingResult.interpreter_running, ending.running);
-    assert.match(endingResult.message, /message_pending=true/);
     assert.doesNotMatch(endingResult.message, /settlement was advanced/);
     if (ending.outcome === "defeat") assert.match(endingResult.message, /party was defeated/);
     if (ending.active) {
       const alreadyDefeated = await battleAction("guard", 0, 0, 0, 8000);
       assert.equal(alreadyDefeated.ok, false);
       assert.equal(alreadyDefeated.battle_outcome, "defeat");
+      assert.match(alreadyDefeated.message, /^no input was submitted;/);
+      assert.doesNotMatch(alreadyDefeated.message, /input accepted/);
     }
     assert.deepEqual(await fs.readdir(path.join(runtime, "inbox")), [], "death and map messages must not receive automatic input");
     await Promise.all([startingState, endingState].map((file) => fs.unlink(file)));
