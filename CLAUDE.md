@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-**black-souls-mcp** 是一个本地 stdio MCP 服务器，让 AI 代理通过 36 个 `black_souls_*` 工具与运行中的 BLACK SOULS（RPG Maker VX Ace / RGSS3）游戏交互。服务器与游戏之间的通信完全基于文件系统（无网络、无 socket）。`AGENTS.md` 是面向所有代理的仓库准则；本文件补充 Claude Code 视角的操作细节，两者冲突时以 `AGENTS.md` 为准。
+**black-souls-mcp** 是一个本地 stdio MCP 服务器，让 AI 代理通过 37 个 `black_souls_*` 工具与运行中的 BLACK SOULS 或 BLACK SOULS II（RPG Maker VX Ace / RGSS3）游戏交互。服务器与游戏之间的通信完全基于文件系统（无网络、无 socket）。`AGENTS.md` 是面向所有代理的仓库准则；本文件补充 Claude Code 视角的操作细节，两者冲突时以 `AGENTS.md` 为准。
 
 ## 常用命令
 
@@ -29,6 +29,8 @@ CI（`.github/workflows/ci.yml`）在 windows-latest + Node 18/22 上运行 `npm
 ```bash
 # 从 RGSSAD v3 归档提取单个文件（纯标准库，支持 SHA-256 门禁）
 python scripts/extract_rgss3a_file.py Game.rgss3a "Data/Scripts.rvdata2" out.rvdata2
+# bs2 改名归档前，必须全量解包；归档文件覆盖同名散放文件并列出差异
+python scripts/extract_rgss3a_file.py runtime/game2/Game.rgss3a --all runtime/game2
 
 # 把 rgss/BlackSoulsBridge.rb 注入 Scripts.rvdata2（纯标准库、字节保持，优先使用）
 python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb --title Main --backup backup.rvdata2
@@ -42,13 +44,13 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 
 | 文件 | 职责 |
 |---|---|
-| `index.ts` | MCP 入口；注册全部 36 个工具；`execute()`/`result()` 统一响应封装 |
+| `index.ts` | MCP 入口；注册全部 37 个工具；`execute()`/`result()` 统一响应封装 |
 | `bridge.ts` | 文件 IPC 全部逻辑：快照读取、`sendSequence`、`sendQuery`、save/load/situation/health/wait |
 | `game.ts` | 启动（含 Game.exe SHA-256 门禁）、强制结束、存档列表、完整性信息 |
-| `config.ts` | 路径解析（环境变量覆盖） |
-| `memory.ts` | AI 持久记忆：scratchpad / longterm / goals / session log（`<ROOT>/memory/`，原子写） |
+| `config.ts` | bs1 / bs2 路径和指纹、持久化选择（`<ROOT>/active_game.txt`，环境变量提供初始值） |
+| `memory.ts` | AI 持久记忆：scratchpad / longterm / goals / session log（bs1 `<ROOT>/memory/`，bs2 `<ROOT>/memory-bs2/`，原子写） |
 | `navigation.ts` | BFS 寻路 `findPath`（导出可单测）、`navigate`、`interact` |
-| `battle.ts` | `battleAction` 一次完成战斗回合 |
+| `battle.ts` | `battleAction` 提交一次战斗输入；额外行动/ATB 下不承诺结算整回合 |
 
 游戏内组件是 `rgss/BlackSoulsBridge.rb`（Ruby 1.9 / RGSS3：无 require、无 JSON 库、无线程；手写 `to_json`；新方法必须 `safe_call`/`safe_instance_variable` 访问游戏对象并在最外层 rescue）。
 
@@ -67,7 +69,7 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 | 常量 | TS 侧 | Ruby 侧 |
 |---|---|---|
 | 协议标识 `black-souls-bridge/1` | `BRIDGE_PROTOCOL` (bridge.ts) | `PROTOCOL` |
-| 版本号（当前 `1.10.4`） | `SERVER_VERSION` (index.ts) + `package.json` | `VERSION` |
+| 版本号（当前 `1.11.0`） | `SERVER_VERSION` (index.ts) + `package.json` / `package-lock.json` | `VERSION` |
 | 动作白名单（15 个） | `ACTIONS` (bridge.ts) | `ALLOWED_ACTIONS` |
 | 队列上限 128 | `MAX_PENDING_COMMANDS` | `MAX_QUEUE` |
 | 序列步数上限 200 / 帧预算 3600 | `encodeSteps` | `MAX_SEQUENCE_STEPS` / `MAX_SEQUENCE_FRAMES` |
@@ -78,10 +80,10 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 - **`dist/` 是构建产物**，不要直接编辑；`unit.mjs` 从 `dist/*.js` 导入，改 `src/` 后必须先 build 再 test。
 - **`runtime/`、`memory/`、`evals/results/` 保持未跟踪**。绝不提交游戏文件、存档、`BridgeRuntime/`、日志或 token。
 - **按键注入只保持 1 帧**，`repeat:N` 展开为"按键、等 1 帧"交替。菜单光标每帧响应所以没问题；地图移动一格约需 16 帧（实测），连续 `repeat` 会被丢弃——地图上要用"单步 + `wait_frames:18`"的节奏。
-- 高层动作（save/load/battle）的菜单导航是**闭环**的：`selectCommandSymbol` / `selectSavefileSlot`（bridge.ts）每步回读真实光标。实测布局：主菜单 7 项（save 在符号 `save`）；战斗指令窗 6 项 attack/skill(特技)/skill(魔法)/guard/item/escape；敌人窗横向排列用左右键。改动后用 `scripts/probe_live.mjs` 各套件重新测绘并跑 `test:live`。
+- 高层动作（save/load/battle）的菜单导航是**闭环**的：`selectCommandSymbol` / `selectSavefileSlot`（bridge.ts）每步回读真实光标。bs1 实测布局：主菜单 7 项（save 在符号 `save`）；战斗指令窗 6 项 attack/skill(特技)/skill(魔法)/guard/item/escape；敌人窗横向排列用左右键。改动后用 `scripts/probe_live.mjs` 各套件重新测绘并跑 `test:live`。bs2 只有一个 skill，且可能动态增加装备指令；技能、道具和敌人目标索引由真实窗口筛选，新增战斗/对话逻辑需实机复核。
 - **战斗回合演出期间引擎不处理 `Scene_Base#update`**（内部等待循环只跑 `Graphics.update`），所以桥接主心跳挂在 `Graphics.update` 上；`Scene_Base` 那条只是没有 Graphics 钩子时的退路。删掉 Graphics 钩子会让胜利结算、长演出、转场期间彻底失联。
 - **地图上的 `cancel` 会打开菜单**（RPG Maker 的 B 键语义），不是"退出"。想离开菜单才用 cancel；在地图上误发会把游戏带进 Scene_Menu，接着的方向键就变成菜单选择。
-- **不可用的选择只会响蜂鸣、光标原地不动**，引擎不会报错。战斗二级菜单里确认后必须回读光标是否真的离开了该窗口，否则会把"什么都没发生"当成成功。`black_souls_battle_action` 下手前先用 `battle_options` 的 `usable_now` 拦截。
+- **不可用的选择只会响蜂鸣、光标原地不动**，引擎不会报错。命令/对话选项读取 `current_enabled`，战斗二级菜单确认后回读窗口是否离开；`battle_options` 的 `enabled` / `usable_now` 提前拦截。bs2 ATB 充能时 `BattleManager.actor` 可能为 nil，此时 `battle_options` 返回不可用而不是假装由第一个队员行动。
 - **读不到快照 ≠ 游戏已退出**。`bridgeStatus` 读文件失败时只能报告"未知"，由最近一次已知 PID 判定存活；把两者混同会让调用方去 kill 一个活得好好的游戏。
 - 游戏在后台约 60 秒后暂停帧循环；`readState`/`readMap` 走可唤醒检查自动恢复，`bridgeStatus`/`bridgeHealth` 保持被动只读。
 
@@ -91,4 +93,4 @@ python scripts/patch_rvdata2_binary.py Scripts.rvdata2 rgss/BlackSoulsBridge.rb 
 
 测试层级：smoke（MCP 握手/工具发现/错误封装）→ unit（临时目录合成 IPC，含损坏恢复、stale 拒绝、记忆系统、寻路）→ integration（SDK 客户端调真实产物）→ live e2e（真实游戏：启动→读档→移动→菜单）。行为改动必须补回归用例。
 
-安装脚本：`install.ps1` 注册到 `~/.codex/config.toml`（带标记块平衡校验）并备份到 `runtime/backup/`；`uninstall.ps1` 移除注册块；`rollback.ps1` 按文件名内嵌时间戳恢复最近备份。
+安装脚本：`install.ps1 -Game bs1|bs2` 注册双游戏路径及指纹到 `~/.codex/config.toml`（带标记块平衡校验）并备份到 `runtime/backup/`；`black_souls_select_game` 负责游玩时切换并持久化，运行中不能切换；`check.ps1 -IncludeRuntime -Game bs2` 可核对 bs2 准备情况；`uninstall.ps1` 移除注册块；`rollback.ps1` 按文件名内嵌时间戳恢复最近备份。

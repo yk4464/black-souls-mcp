@@ -4,9 +4,9 @@
 
 [![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml) [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/yk4464/black-souls-mcp/blob/main/LICENSE)
 
-A local MCP for BLACK SOULS. Put plainly: it lets Claude Code, Codex, and similar agents hook into the game. Purely for fun.
+A local MCP for BLACK SOULS and BLACK SOULS II. It lets Claude Code, Codex, and similar agents connect to the game you select. Purely for fun.
 
-Not screenshots, not OCR, not mouse simulation. It reads the game's internal objects and feeds actions into the native input loop, so a text-only model is enough. Pathfinding, dialogue, menus, and battle were calibrated on a live install — not a concept demo.
+Not screenshots, not OCR, not mouse simulation. It reads internal game objects and feeds actions into the native input loop, so a text-only model is enough. Navigation, dialogue, menus and battle were calibrated live for bs1; the new bs2 battle and dialogue paths still need live validation.
 
 > [!IMPORTANT]
 > This repository contains only the bridge program and MCP source. It does not include, download, or distribute the game itself, saves, assets, keys, or unpacked commercial game data. Prepare your own legally obtained game files before use.
@@ -38,15 +38,15 @@ More accurate, faster, less likely to derail, and no multimodal model needed
 
 ## MCP tools
 
-36 tools in total, grouped by purpose:
+37 tools in total, grouped by purpose:
 
 | Group | Tools | Purpose |
 |---|---|---|
-| Process & diagnostics | `black_souls_status` · `black_souls_launch` · `black_souls_kill` · `black_souls_list_saves` · `black_souls_health` | Check game files and bridge, launch or force-quit the game, list saves, one-call self-diagnosis with a recovery recommendation |
+| Process & diagnostics | `black_souls_select_game` · `black_souls_status` · `black_souls_launch` · `black_souls_kill` · `black_souls_list_saves` · `black_souls_health` | Select bs1 / bs2, check files and bridge, launch or force-quit the game, list saves and diagnose |
 | State reading | `black_souls_get_state` · `black_souls_get_map` · `black_souls_situation` · `black_souls_get_full_map` · `black_souls_get_event` · `black_souls_get_scene_detail` | Scene, characters, messages, menus, battle; nearby or wide-range map; event pages and trigger conditions; deeper scene state |
 | Game data | `black_souls_get_variables` · `black_souls_get_switches` · `black_souls_get_inventory` · `black_souls_get_party_detail` | Variables, switches, inventory and equipment, detailed party stats and skills |
 | Input | `black_souls_input` · `black_souls_input_sequence` · `black_souls_wait` | Allowlisted keyboard actions, multi-step sequences, waiting for a game condition |
-| High-level actions | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_options` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | Automatic pathfinding, walk-up-and-interact, a full listing of every choice available this turn (including each skill and magic submenu entry with its cost and whether it is usable), one-call battle turns (attack / skill / magic / guard / item / flee), dialogue advancing with choice selection, disk-verified saving and loading; all menu navigation is closed-loop against the real cursor and calibrated on the real game |
+| High-level actions | `black_souls_navigate` · `black_souls_interact` · `black_souls_battle_options` · `black_souls_battle_action` · `black_souls_advance_dialogue` · `black_souls_save` · `black_souls_load` | Navigate and interact; read real command, skill, item and target indices from the game windows; submit one battle input (not necessarily a completed turn; magic and equipment change only if offered); advance dialogue, save and load. bs2 battle behavior still needs live validation |
 | AI memory | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | Session scratchpad, long-term game knowledge, goal hierarchy, persistent session log — all survive context resets |
 | Evals | `black_souls_eval_status` | Scenario completion checks for `evals/runner.mjs` |
 
@@ -83,7 +83,7 @@ You will need:
 
 1. Windows 10/11
 2. Node.js 18 or newer
-3. Your own copy of BLACK SOULS
+3. Your own copy of BLACK SOULS or BLACK SOULS II
 4. Python 3.11+ (only for the bridge script writing tools)
 5. `Data/Scripts.rvdata2` prepared from your own copy; this project never downloads or unpacks game assets for you
 
@@ -109,6 +109,11 @@ runtime/
 │  ├─ Game.ini
 │  ├─ Game.rgss3a~
 │  └─ Data/Scripts.rvdata2
+├─ game2/
+│  ├─ Game.exe
+│  ├─ Game.ini
+│  ├─ Game.rgss3a~
+│  └─ Data/Scripts.rvdata2
 └─ backup/
 ```
 
@@ -119,6 +124,16 @@ python .\scripts\patch_rvdata2_binary.py .\runtime\game\Data\Scripts.rvdata2 .\r
 ```
 
 `patch_rvdata2_binary.py` uses only the Python standard library and preserves the original byte layout; prefer it. The alternative `patch_rvdata2.py` requires `python -m pip install -r requirements-tools.txt` first.
+
+For bs2, copy your entire BLACK SOULS II game into `runtime/game2/`. **Extract every file** from `Game.rgss3a` into that directory *before* renaming the archive to `Game.rgss3a~`; extracting only `Scripts.rvdata2` makes other archived resources unavailable. Full extraction gives archive entries precedence over same-named loose files and reports every differing file (three PNGs differ in some bs2 copies):
+
+```powershell
+python .\scripts\extract_rgss3a_file.py .\runtime\game2\Game.rgss3a --all .\runtime\game2
+Rename-Item -LiteralPath .\runtime\game2\Game.rgss3a -NewName 'Game.rgss3a~'
+python .\scripts\patch_rvdata2_binary.py .\runtime\game2\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts2.rvdata2.bak
+```
+
+Re-inject the current bridge into either game if an older version was prepared: older bridges lack the actual window lists and integer-button mapping. Never modify a copy while its game is running.
 
 ### 3. Install into Codex
 
@@ -136,6 +151,8 @@ Using an external directory:
 ```
 
 The install script first backs up the current user's Codex `config.toml`, then writes the `black_souls` MCP registration. Restart Codex when it finishes.
+
+With only bs2 prepared, use `.\install.ps1 -Game bs2`. The registration includes both game directories and fingerprints; pass `-Game2Dir` for a custom bs2 path. Call `black_souls_select_game` with no arguments to list the copies, then `{"game":"bs1"}` or `{"game":"bs2"}` to switch. Switching is refused while a game runs. The selection persists in `runtime/active_game.txt` across server restarts and overrides the registration's `BLACK_SOULS_GAME` initial default.
 
 ### 4. Verify
 
@@ -183,7 +200,7 @@ Then set it in the current terminal:
 $env:BLACK_SOULS_GAME_EXE_SHA256 = '<YOUR_SHA256>'
 ```
 
-Setting it to an empty string skips the fingerprint comparison but still checks that the required files exist. Only do this once you are confident about where your game files came from.
+For bs2, use `runtime/game2/Game.exe` and `BLACK_SOULS2_GAME_EXE_SHA256`. An empty fingerprint skips that game's comparison but still checks required files; only do this when you trust the source of your files.
 
 ## Environment variables
 
@@ -192,6 +209,9 @@ Setting it to an empty string skips the fingerprint comparison but still checks 
 | `BLACK_SOULS_ROOT` | Runtime directory; defaults to `<repo>/runtime` |
 | `BLACK_SOULS_DIR` | The prepared standalone game directory |
 | `BLACK_SOULS_GAME_EXE_SHA256` | Optional `Game.exe` checksum |
+| `BLACK_SOULS2_DIR` | bs2 directory; defaults to `<runtime>/game2` |
+| `BLACK_SOULS2_GAME_EXE_SHA256` | bs2 `Game.exe` checksum |
+| `BLACK_SOULS_GAME` | Initial selection bs1 / bs2; persisted selection takes precedence |
 | `BLACK_SOULS_TEST_TEMP` | Temporary directory for unit tests |
 | `BLACK_SOULS_EXPECTED_SAVE_COUNT` | Optional minimum save count for integration tests |
 
@@ -202,6 +222,7 @@ npm.cmd run check              # Build, MCP handshake, tool discovery, and synth
 npm.cmd run test:integration   # Requires a prepared runtime directory
 npm.cmd run test:live          # Launches the game and performs real keyboard input
 .\check.ps1 -IncludeRuntime    # Checks source, game copy, and Codex registration
+.\check.ps1 -IncludeRuntime -Game bs2    # Read-only bs2 preparation and fingerprint check
 node evals\runner.mjs menu_navigation   # Run one eval scenario (requires the real game)
 ```
 
