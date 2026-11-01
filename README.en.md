@@ -1,8 +1,17 @@
-# BLACK SOULS MCP
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/readme/hero-dark.webp">
+    <img src="./assets/readme/hero-light.webp" width="100%" alt="BLACK SOULS MCP: reads the game's internal state and plays BLACK SOULS / BLACK SOULS II through the game's native input loop">
+  </picture>
+</p>
+
+<div align="center">
 
 [简体中文](README.md) · [English](README.en.md)
 
-[![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml) [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/yk4464/black-souls-mcp/blob/main/LICENSE)
+[![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml) [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/yk4464/black-souls-mcp/blob/main/LICENSE) ![Windows only](https://img.shields.io/badge/platform-Windows%20only-0078D4)
+
+</div>
 
 A local MCP for BLACK SOULS and BLACK SOULS II. It lets Claude Code, Codex, and similar agents connect to the game you select. Purely for fun.
 
@@ -20,23 +29,17 @@ Once connected, an MCP client can read:
 - Party level, HP, MP, states, gold
 - Battle phase, units on both sides, currently available commands
 
-It can also drive the character: move, confirm, cancel, page, dash, fast-forward text with Ctrl, or submit a whole run of consecutive actions at once. `dash_up/down/left/right` combines a direction with the game's Shift/run input on the same frame; repeatable `text_skip` mirrors holding Ctrl.
+It can also drive the character: move, confirm, cancel, page, dash, fast-forward text with Ctrl, or submit a whole run of consecutive actions at once.
 
-Input goes only through the game's own movement / event / menu / battle handling. The interface never writes HP, items, variables, or story switches directly. Commands carry a process ID, launch generation, frame number, and command number, so stale state and duplicate commands are rejected; corrupt snapshots are skipped automatically. When RPG Maker suspends the game in the background, the bridge can resume the keyboard loop without stealing the foreground window.
+<details>
+<summary>Dash and Ctrl fast-forward key details</summary>
 
-## How does it compare to screenshot OCR and mouse simulation?
+`dash_up/down/left/right` combines a direction with the game's Shift/run input on the same frame; repeatable `text_skip` mirrors holding Ctrl.
 
-| | Screenshot / OCR | Mouse simulation | BLACK SOULS MCP |
-|---|---|---|---|
-| State source | Image recognition, easy to misread or miss | Image recognition | Reads game objects directly, frame-accurate |
-| Needs window on top / foreground | Usually yes | Yes | No, resumes the input loop in the background |
-| Network required | Often needs a vision model service | Depends on implementation | Local stdio only, no ports opened |
-| Input path | Simulated clicks / keystrokes | Simulated clicks | Native game input loop, frame-synced |
-| Risk of corrupting saves / story | Depends on implementation | Depends on implementation | Never writes HP, items, variables, or story switches directly |
+</details>
 
-More accurate, faster, less likely to derail, and no multimodal model needed
-
-## MCP tools
+<details>
+<summary>All 37 tools</summary>
 
 37 tools in total, grouped by purpose:
 
@@ -50,44 +53,44 @@ More accurate, faster, less likely to derail, and no multimodal model needed
 | AI memory | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | Session scratchpad, long-term game knowledge, goal hierarchy, persistent session log — all survive context resets and are kept separately for bs1 / bs2 |
 | Evals | `black_souls_eval_status` | Scenario completion checks for `evals/runner.mjs` |
 
+</details>
+
 ## How it works
 
-```
-MCP client
-    │ stdio
-    ▼
-Node.js / TypeScript service
-    │ atomic files + launch token
-    ▼
-BridgeRuntime
-    │ RGSS3 Input and game objects
-    ▼
-Your prepared standalone BLACK SOULS / BLACK SOULS II copy
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/readme/how-it-works-dark.svg">
+    <img src="./assets/readme/how-it-works-light.svg" width="100%" alt="How it works: input flows from the MCP client over stdio to black-souls-mcp, as inbox/*.cmd files into BridgeRuntime/, then into the game's RGSS3 Input; Game.exe writes state/*.json about 10 times per second, command replies go to outbox/&lt;id&gt;.json, and the server answers the client over stdio. No screenshots, no OCR, no mouse">
+  </picture>
+</p>
 
 The bridge script refreshes state roughly 10 times per second; a new map snapshot is generated only when the position or map changes. Commands are processed frame by frame by the game's main thread, independent of window focus and of visual recognition. Query commands (variables, switches, inventory, full map, and so on) travel the same channel and are answered instantly without frame stepping.
 
-## Project status
+Input goes only through the game's own movement / event / menu / battle handling. The interface never writes HP, items, variables, or story switches directly. Commands carry a process ID, launch generation, frame number, and command number, so stale state and duplicate commands are rejected; corrupt snapshots are skipped automatically. When RPG Maker suspends the game in the background, the bridge can resume the keyboard loop without stealing the foreground window.
+
+## How does it compare to screenshot OCR and mouse simulation?
+
+| | Screenshot / OCR | Mouse simulation | BLACK SOULS MCP |
+|---|---|---|---|
+| State source | Image recognition, easy to misread or miss | Image recognition | Reads game objects directly, frame-accurate |
+| Needs window on top / foreground | Usually yes | Yes | No, resumes the input loop in the background |
+| Network required | Often needs a vision model service | Depends on implementation | Local stdio only, no ports opened |
+| Input path | Simulated clicks / keystrokes | Simulated clicks | Native game input loop, frame-synced |
+| Risk of corrupting saves / story | Depends on implementation | Depends on implementation | Never writes HP, items, variables, or story switches directly |
+
+## Quick start
 
 | | |
 |---|---|
 | Platform | Windows 10/11 |
-| Transport | Local `stdio` |
+| Node.js | Node.js 18 or newer |
+| Python | Python 3.11+ (only for the bridge script writing tools) |
+| Game copy | Your own copy of BLACK SOULS or BLACK SOULS II |
+| Script archive | `Data/Scripts.rvdata2` prepared from your own copy; this project never downloads or unpacks game assets for you |
 | Supported engine | RPG Maker VX Ace / RGSS3 |
-| Distribution | Install from source; no npm package published yet |
+| Transport | Local `stdio` |
 | Game version | bs1 and bs2 each ship one built-in `Game.exe` fingerprint; other versions can be configured per game |
-
-## Before you start
-
-You will need:
-
-1. Windows 10/11
-2. Node.js 18 or newer
-3. Your own copy of BLACK SOULS or BLACK SOULS II
-4. Python 3.11+ (only for the bridge script writing tools)
-5. `Data/Scripts.rvdata2` prepared from your own copy; this project never downloads or unpacks game assets for you
-
-## Quick start
+| Distribution | Install from source; no npm package published yet |
 
 ### 1. Get the source and check it
 
@@ -125,6 +128,9 @@ python .\scripts\patch_rvdata2_binary.py .\runtime\game\Data\Scripts.rvdata2 .\r
 
 `patch_rvdata2_binary.py` uses only the Python standard library and preserves the original byte layout; prefer it. The alternative `patch_rvdata2.py` requires `python -m pip install -r requirements-tools.txt` first.
 
+<details>
+<summary>Preparing bs2</summary>
+
 For bs2, copy your entire BLACK SOULS II game into `runtime/game2/`. **Extract every file** from `Game.rgss3a` into that directory *before* renaming the archive to `Game.rgss3a~`; extracting only `Scripts.rvdata2` makes other archived resources unavailable. Full extraction gives archive entries precedence over same-named loose files and reports every differing file (three PNGs differ in some bs2 copies):
 
 ```powershell
@@ -132,6 +138,8 @@ python .\scripts\extract_rgss3a_file.py .\runtime\game2\Game.rgss3a --all .\runt
 Rename-Item -LiteralPath .\runtime\game2\Game.rgss3a -NewName 'Game.rgss3a~'
 python .\scripts\patch_rvdata2_binary.py .\runtime\game2\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts2.rvdata2.bak
 ```
+
+</details>
 
 Re-inject the current bridge into either game if an older version was prepared: older bridges lack the actual window lists and integer-button mapping. Never modify a copy while its game is running.
 
@@ -142,6 +150,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\install.ps1
 ```
 
+The install script first backs up the current user's Codex `config.toml`, then writes the `black_souls` MCP registration. Restart Codex when it finishes.
+
+<details>
+<summary>External directory and dual-game install</summary>
+
 Using an external directory:
 
 ```powershell
@@ -150,9 +163,9 @@ Using an external directory:
   -GameDir 'D:\BlackSoulsRuntime\game'
 ```
 
-The install script first backs up the current user's Codex `config.toml`, then writes the `black_souls` MCP registration. Restart Codex when it finishes.
-
 With only bs2 prepared, use `.\install.ps1 -Game bs2`. The registration includes both game directories and fingerprints; pass `-Game2Dir` for a custom bs2 path. Call `black_souls_select_game` with no arguments to list the copies, then `{"game":"bs1"}` or `{"game":"bs2"}` to switch. Switching is refused while a game runs. The selection persists in `runtime/active_game.txt` across server restarts and overrides the registration's `BLACK_SOULS_GAME` initial default.
+
+</details>
 
 ### 4. Verify
 
@@ -170,6 +183,9 @@ black_souls_get_state
 black_souls_get_map
 ```
 
+<details>
+<summary>Advanced: action sequence JSON and engine fast-forward</summary>
+
 Example arguments for a consecutive action run:
 
 ```json
@@ -186,7 +202,9 @@ For optional fast-forwarding in the independent MCP copy, write one integer from
 `BridgeRuntime/frame_rate.txt`. Valid values survive MCP game restarts; remove the file to restore the
 launch-time frame rate. The effective value is returned as `frame_rate` in state snapshots.
 
-## Game version fingerprint
+</details>
+
+## Game version fingerprint and environment variables
 
 Get the SHA-256 of your own `Game.exe`:
 
@@ -202,7 +220,8 @@ $env:BLACK_SOULS_GAME_EXE_SHA256 = '<YOUR_SHA256>'
 
 For bs2, use `runtime/game2/Game.exe` and `BLACK_SOULS2_GAME_EXE_SHA256`. An empty fingerprint skips that game's comparison but still checks required files; only do this when you trust the source of your files.
 
-## Environment variables
+<details>
+<summary>Environment variables</summary>
 
 | Variable | Description |
 |---|---|
@@ -215,18 +234,7 @@ For bs2, use `runtime/game2/Game.exe` and `BLACK_SOULS2_GAME_EXE_SHA256`. An emp
 | `BLACK_SOULS_TEST_TEMP` | Temporary directory for unit tests |
 | `BLACK_SOULS_EXPECTED_SAVE_COUNT` | Optional minimum save count for integration tests |
 
-## Testing
-
-```powershell
-npm.cmd run check              # Build, MCP handshake, tool discovery, and synthetic tests
-npm.cmd run test:integration   # Requires a prepared runtime directory
-npm.cmd run test:live          # Launches the game and performs real keyboard input
-.\check.ps1 -IncludeRuntime    # Checks source, game copy, and Codex registration
-.\check.ps1 -IncludeRuntime -Game bs2    # Read-only bs2 preparation and fingerprint check
-node evals\runner.mjs menu_navigation   # Run one eval scenario (requires the real game)
-```
-
-Live tests change the position or menu state of the current game session, but never save on their own. Keeping a copy of your own saves before running them is still recommended.
+</details>
 
 ## Limitations and troubleshooting
 
@@ -247,6 +255,24 @@ Both touch only the Codex registration and its config backups; neither deletes t
 ```powershell
 .\rollback.ps1 -ConfigBackup 'D:\BlackSoulsRuntime\backup\config.toml.before-black-souls-....bak'
 ```
+
+## Testing
+
+<details>
+<summary>Test commands</summary>
+
+```powershell
+npm.cmd run check              # Build, MCP handshake, tool discovery, and synthetic tests
+npm.cmd run test:integration   # Requires a prepared runtime directory
+npm.cmd run test:live          # Launches the game and performs real keyboard input
+.\check.ps1 -IncludeRuntime    # Checks source, game copy, and Codex registration
+.\check.ps1 -IncludeRuntime -Game bs2    # Read-only bs2 preparation and fingerprint check
+node evals\runner.mjs menu_navigation   # Run one eval scenario (requires the real game)
+```
+
+Live tests change the position or menu state of the current game session, but never save on their own. Keeping a copy of your own saves before running them is still recommended.
+
+</details>
 
 ## Security and privacy
 

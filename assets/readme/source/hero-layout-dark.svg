@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="title desc">
+  <title id="title">BLACK SOULS MCP</title>
+  <desc id="desc">MCP server for BLACK SOULS / BLACK SOULS II: reads the game's state snapshot and plays through the game's own input loop.</desc>
+  <!-- 合成源文件：hero-bg-dark.jpg 为 AI 生成的原创纹理，发布产物是渲染后的 ../hero-dark.webp -->
+  <defs>
+    <clipPath id="frame"><rect width="1200" height="400" rx="20"/></clipPath>
+    <linearGradient id="shade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#120E16" stop-opacity="0.55"/>
+      <stop offset="0.42" stop-color="#120E16" stop-opacity="0.25"/>
+      <stop offset="0.62" stop-color="#1A1024" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#160C1E" stop-opacity="0.72"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.82" cy="0.05" r="0.55">
+      <stop offset="0" stop-color="#140A1C" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#140A1C" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <g clip-path="url(#frame)">
+  <image href="hero-bg-dark.jpg" xlink:href="hero-bg-dark.jpg" width="1200" height="400" preserveAspectRatio="xMidYMid slice"/>
+  <rect width="1200" height="400" fill="url(#shade)"/>
+  <rect width="1200" height="400" fill="url(#glow)"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="398.5" rx="19.5" fill="none" stroke="#3A2E3F" stroke-width="1.5"/>
+  </g>
+
+  <g id="title-block" transform="translate(64 0)">
+    <text x="0" y="82" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" letter-spacing="1.5" fill="#C2A46B">MCP SERVER · RPG MAKER VX ACE / RGSS3</text>
+    <text x="-3" y="164" font-family="Georgia, 'Times New Roman', serif" font-size="78" letter-spacing="2" fill="#EDE6DA">BLACK SOULS</text>
+    <text x="-3" y="242" font-family="Georgia, 'Times New Roman', serif" font-size="78" letter-spacing="2" fill="#D04A55">MCP</text>
+    <text x="0" y="292" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" font-size="24" fill="#EDE6DA">Reads the game's state.</text>
+    <text x="0" y="324" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" font-size="24" fill="#EDE6DA">Plays through its own input loop.</text>
+    <text x="0" y="360" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="18" fill="#8A8090">37 tools · stdio · Windows · bs1 / bs2</text>
+  </g>
+
+  <g id="state-card">
+    <rect x="684" y="52" width="460" height="232" rx="10" fill="#18131C" stroke="#3A2E3F" stroke-width="1.2" opacity="0.94" transform="rotate(1.2 914 168)"/>
+    <rect x="676" y="46" width="468" height="236" rx="10" fill="#1E1823" stroke="#3A2E3F" stroke-width="1.5" opacity="0.94"/>
+    <g transform="translate(700 92)" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20">
+      <text x="0" y="0" xml:space="preserve"><tspan fill="#8A8090">{</tspan></text>
+      <text x="0" y="28" xml:space="preserve"><tspan fill="#8A8090">  </tspan><tspan fill="#C2A46B">"frame"</tspan><tspan fill="#8A8090">: </tspan><tspan fill="#EDE6DA">48213</tspan><tspan fill="#8A8090">,</tspan></text>
+      <text x="0" y="56" xml:space="preserve"><tspan fill="#8A8090">  </tspan><tspan fill="#C2A46B">"scene"</tspan><tspan fill="#8A8090">: { </tspan><tspan fill="#C2A46B">"name"</tspan><tspan fill="#8A8090">: </tspan><tspan fill="#EDE6DA">"Scene_Map"</tspan><tspan fill="#8A8090"> },</tspan></text>
+      <text x="0" y="84" xml:space="preserve"><tspan fill="#8A8090">  </tspan><tspan fill="#C2A46B">"player"</tspan><tspan fill="#8A8090">: { </tspan><tspan fill="#C2A46B">"x"</tspan><tspan fill="#8A8090">: </tspan><tspan fill="#EDE6DA">12</tspan><tspan fill="#8A8090">, </tspan><tspan fill="#C2A46B">"y"</tspan><tspan fill="#8A8090">: </tspan><tspan fill="#EDE6DA">7</tspan><tspan fill="#8A8090"> },</tspan></text>
+      <text x="0" y="112" xml:space="preserve"><tspan fill="#8A8090">  </tspan><tspan fill="#C2A46B">"message"</tspan><tspan fill="#8A8090">: { </tspan><tspan fill="#C2A46B">"busy"</tspan><tspan fill="#8A8090">: </tspan><tspan fill="#EDE6DA">false</tspan><tspan fill="#8A8090"> },</tspan></text>
+      <text x="0" y="140" xml:space="preserve"><tspan fill="#8A8090">  </tspan><tspan fill="#C2A46B">"battle"</tspan><tspan fill="#8A8090">: { </tspan><tspan fill="#C2A46B">"active"</tspan><tspan fill="#8A8090">: </tspan><tspan fill="#EDE6DA">false</tspan><tspan fill="#8A8090"> }</tspan></text>
+      <text x="0" y="168" xml:space="preserve"><tspan fill="#8A8090">}</tspan></text>
+    </g>
+  </g>
+
+  <g id="thread">
+    <path d="M 742 282 C 742 306 690 298 678 312 C 672 320 676 328 690 328 L 1120 328 C 1140 328 1150 318 1150 304"
+          fill="none" stroke="#9E1B2A" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="742" cy="282" r="4.5" fill="#1E1823" stroke="#9E1B2A" stroke-width="2.5"/>
+    <g transform="translate(700 310)">
+      <rect width="112" height="36" rx="7" fill="#1E1823" stroke="#3A2E3F" stroke-width="1.5"/>
+      <text x="56" y="25" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">move_up</text>
+    </g>
+    <g transform="translate(840 310)">
+      <rect width="112" height="36" rx="7" fill="#1E1823" stroke="#3A2E3F" stroke-width="1.5"/>
+      <text x="56" y="25" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">confirm</text>
+    </g>
+    <g transform="translate(980 310)">
+      <rect width="136" height="36" rx="7" fill="#1E1823" stroke="#3A2E3F" stroke-width="1.5"/>
+      <text x="68" y="25" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">text_skip</text>
+    </g>
+    <circle cx="826" cy="328" r="5" fill="#9E1B2A"/>
+    <circle cx="966" cy="328" r="5" fill="#9E1B2A"/>
+    <circle cx="1150" cy="302" r="4" fill="#9E1B2A"/>
+  </g>
+</svg>

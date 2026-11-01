@@ -1,8 +1,17 @@
-# BLACK SOULS MCP
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/readme/hero-dark.webp">
+    <img src="./assets/readme/hero-light.webp" width="100%" alt="BLACK SOULS MCP：读取游戏内部状态，并通过游戏原生输入循环操作 BLACK SOULS / BLACK SOULS II">
+  </picture>
+</p>
+
+<div align="center">
 
 [简体中文](README.md) · [English](README.en.md)
 
-[![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml) [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/yk4464/black-souls-mcp/blob/main/LICENSE)
+[![CI](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yk4464/black-souls-mcp/actions/workflows/ci.yml) [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/yk4464/black-souls-mcp/blob/main/LICENSE) ![Windows only](https://img.shields.io/badge/platform-Windows%20only-0078D4)
+
+</div>
 
 一个同时支持 BLACK SOULS 和 BLACK SOULS II 的 MCP。让 Claude Code / Codex 这类 agent 直接接入用户选中的游戏。纯娱乐。
 
@@ -20,23 +29,17 @@
 - 队伍等级、生命、魔力、异常状态、金钱
 - 战斗阶段、双方单位、当前可用指令
 
-也能操控角色：移动、确认、取消、翻页、冲刺、Ctrl 文本快进，或者一次提交一整套连续动作，比如"向上跑三步，再打开菜单看装备"。`dash_up/down/left/right` 会在同一帧组合方向与游戏的 Shift/冲刺键；`text_skip` 对应 Ctrl，可用 `repeat` 连续保持。
+也能操控角色：移动、确认、取消、翻页、冲刺、Ctrl 文本快进，或者一次提交一整套连续动作，比如"向上跑三步，再打开菜单看装备"。
 
-输入只经过游戏自身的移动 / 事件 / 菜单 / 战斗处理逻辑，接口不会直接改生命、物品、变量或剧情开关。命令带着进程 ID、启动代次、帧号和命令编号，旧状态和重复命令会被拒绝；快照损坏会自动跳过；游戏在后台被 RPG Maker 暂停时，桥接能恢复键盘循环，不抢前台窗口。
+<details>
+<summary>冲刺与 Ctrl 快进的按键细节</summary>
 
-## 跟截图 OCR和鼠标模拟比，差在哪？
+`dash_up/down/left/right` 会在同一帧组合方向与游戏的 Shift/冲刺键；`text_skip` 对应 Ctrl，可用 `repeat` 连续保持。
 
-| | 截图 / OCR 方案 | 鼠标模拟方案 | BLACK SOULS MCP |
-|---|---|---|---|
-| 状态来源 | 图像识别，容易看错、看漏 | 图像识别 | 直接读游戏内部对象，逐帧精确 |
-| 需要窗口置顶 / 前台 | 通常需要 | 需要 | 不需要，后台也能恢复输入循环 |
-| 是否联网 | 常需要视觉模型服务 | 视实现而定 | 纯本地 stdio，不开端口 |
-| 输入路径 | 模拟点击 / 按键 | 模拟点击 | 走游戏原生输入循环，帧同步 |
-| 会不会误改存档 / 剧情 | 视实现而定 | 视实现而定 | 不直接改生命、物品、变量、剧情开关 |
+</details>
 
-更准、更快、更不容易翻车，而且不需要多模态
-
-## MCP 工具
+<details>
+<summary>37 个工具一览</summary>
 
 共 37 个工具，按用途分组：
 
@@ -50,44 +53,44 @@
 | AI 记忆 | `black_souls_scratchpad_read/write` · `black_souls_memory_read/write/delete` · `black_souls_goals_read/write/set_active` · `black_souls_session_log_append/read` | 会话便签、长期游戏知识库、目标层级、持久会话日志，跨上下文重置保留；bs1 / bs2 分别存放 |
 | 评测 | `black_souls_eval_status` | 供 `evals/runner.mjs` 检查评测场景的完成条件 |
 
+</details>
+
 ## 工作原理
 
-```
-MCP 客户端
-    │ stdio
-    ▼
-Node.js / TypeScript 服务
-    │ 原子文件 + 启动令牌
-    ▼
-BridgeRuntime
-    │ RGSS3 Input 与游戏对象
-    ▼
-使用者准备的 BLACK SOULS / BLACK SOULS II 独立副本
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/readme/how-it-works-dark.svg">
+    <img src="./assets/readme/how-it-works-light.svg" width="100%" alt="工作原理：输入从 MCP 客户端经 stdio 到 black-souls-mcp，写成 inbox/*.cmd 进入 BridgeRuntime/，再进入游戏的 RGSS3 Input；状态由 Game.exe 每秒约 10 次写入 state/*.json，命令应答写入 outbox/&lt;id&gt;.json，服务再经 stdio 返回客户端。不截图、不做 OCR、不模拟鼠标">
+  </picture>
+</p>
 
 桥接脚本每秒约更新 10 次状态；地图仅在位置或地图变化时生成新快照。命令由游戏主线程逐帧处理，不依赖窗口焦点，也不依赖视觉识别。查询类命令（变量、开关、背包、全图等）走同一条通道即时应答，不占用帧步进。
 
-## 项目状态
+输入只经过游戏自身的移动 / 事件 / 菜单 / 战斗处理逻辑，接口不会直接改生命、物品、变量或剧情开关。命令带着进程 ID、启动代次、帧号和命令编号，旧状态和重复命令会被拒绝；快照损坏会自动跳过；游戏在后台被 RPG Maker 暂停时，桥接能恢复键盘循环，不抢前台窗口。
+
+## 跟截图 OCR和鼠标模拟比，差在哪？
+
+| | 截图 / OCR 方案 | 鼠标模拟方案 | BLACK SOULS MCP |
+|---|---|---|---|
+| 状态来源 | 图像识别，容易看错、看漏 | 图像识别 | 直接读游戏内部对象，逐帧精确 |
+| 需要窗口置顶 / 前台 | 通常需要 | 需要 | 不需要，后台也能恢复输入循环 |
+| 是否联网 | 常需要视觉模型服务 | 视实现而定 | 纯本地 stdio，不开端口 |
+| 输入路径 | 模拟点击 / 按键 | 模拟点击 | 走游戏原生输入循环，帧同步 |
+| 会不会误改存档 / 剧情 | 视实现而定 | 视实现而定 | 不直接改生命、物品、变量、剧情开关 |
+
+## 快速开始
 
 | | |
 |---|---|
 | 平台 | Windows 10/11 |
-| 传输方式 | 本地 `stdio` |
+| Node.js | Node.js 18 或更新版本 |
+| Python | Python 3.11+（仅用于桥接脚本写入工具） |
+| 游戏副本 | 自己的 BLACK SOULS 或 BLACK SOULS II 游戏副本 |
+| 脚本档 | 已从自己的副本准备好 `Data/Scripts.rvdata2`；本项目不会自动下载或解包游戏资源 |
 | 支持引擎 | RPG Maker VX Ace / RGSS3 |
-| 发布方式 | 从源码安装；当前未发布 npm 包 |
+| 传输方式 | 本地 `stdio` |
 | 游戏版本 | bs1 / bs2 各有一个内置 `Game.exe` 指纹，其他版本可分别配置 |
-
-## 开始之前
-
-需要准备：
-
-1. Windows 10/11
-2. Node.js 18 或更新版本
-3. 自己的 BLACK SOULS 或 BLACK SOULS II 游戏副本
-4. Python 3.11+（仅用于桥接脚本写入工具）
-5. 已从自己的副本准备好 `Data/Scripts.rvdata2`；本项目不会自动下载或解包游戏资源
-
-## 快速开始
+| 发布方式 | 从源码安装；当前未发布 npm 包 |
 
 ### 1. 获取源码并检查
 
@@ -125,6 +128,9 @@ python .\scripts\patch_rvdata2_binary.py .\runtime\game\Data\Scripts.rvdata2 .\r
 
 `patch_rvdata2_binary.py` 只用 Python 标准库，保持原字节布局，优先使用；备选的 `patch_rvdata2.py` 需要先 `python -m pip install -r requirements-tools.txt`。
 
+<details>
+<summary>准备 bs2</summary>
+
 准备 bs2：把自己的 BLACK SOULS II **整份**副本复制到 `runtime/game2/`，先将 `Game.rgss3a` **全量解包到该目录**，再改名为 `Game.rgss3a~`。不能只解出 `Scripts.rvdata2` 就改名，否则游戏读取不到归档里其余资源。全量解包会覆盖同名散放文件（归档优先），逐项打印有差异的文件及总数；已发现某些 bs2 副本有 3 张同名 PNG 不一致，不能盲目保留散放版本：
 
 ```powershell
@@ -132,6 +138,8 @@ python .\scripts\extract_rgss3a_file.py .\runtime\game2\Game.rgss3a --all .\runt
 Rename-Item -LiteralPath .\runtime\game2\Game.rgss3a -NewName 'Game.rgss3a~'
 python .\scripts\patch_rvdata2_binary.py .\runtime\game2\Data\Scripts.rvdata2 .\rgss\BlackSoulsBridge.rb --backup .\runtime\backup\Scripts2.rvdata2.bak
 ```
+
+</details>
 
 两部游戏若已注入旧版桥接，也需用当前 `rgss/BlackSoulsBridge.rb` 重新注入；旧桥接不包含真实窗口列表和整数按钮映射。以上命令仅适用于你自己的游戏副本，勿在游戏运行时改写。
 
@@ -142,6 +150,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\install.ps1
 ```
 
+安装脚本会先备份当前用户的 Codex `config.toml`，再写入 `black_souls` MCP 注册。完成后重启 Codex。
+
+<details>
+<summary>外部目录与双游戏安装</summary>
+
 使用外部目录：
 
 ```powershell
@@ -150,9 +163,9 @@ Set-ExecutionPolicy -Scope Process Bypass
   -GameDir 'D:\BlackSoulsRuntime\game'
 ```
 
-安装脚本会先备份当前用户的 Codex `config.toml`，再写入 `black_souls` MCP 注册。完成后重启 Codex。
-
 只有 bs2 副本时用 `.\install.ps1 -Game bs2`；同时准备两部时，注册会保留 `BLACK_SOULS_DIR`、`BLACK_SOULS2_DIR` 及各自指纹。在 MCP 内先调用 `black_souls_select_game`（不传 `game`）查看准备情况，再传 `{"game":"bs1"}` 或 `{"game":"bs2"}` 切换；游戏运行中不能切换。选择写入 `runtime/active_game.txt`，MCP 重启后保留，优先级高于安装时的 `BLACK_SOULS_GAME` 默认值。自定义 bs2 路径传 `-Game2Dir`。
+
+</details>
 
 ### 4. 验证
 
@@ -169,6 +182,9 @@ black_souls_launch
 black_souls_get_state
 black_souls_get_map
 ```
+
+<details>
+<summary>进阶：连续动作 JSON 与引擎快进</summary>
 
 连续动作参数示例：
 
@@ -198,7 +214,9 @@ black_souls_get_map
 `black_souls_get_state` 的 `frame_rate` 字段返回实际值。快进只缩短真实游戏帧等待，不直接改魂、
 属性、掉落、敌人或剧情。调高前应先保存并用少量战斗验证先手、伤害与结算；高难度仍可能导致死亡和掉魂。
 
-## 游戏版本指纹
+</details>
+
+## 游戏版本指纹与环境变量
 
 获取自己的 `Game.exe` SHA-256：
 
@@ -214,7 +232,8 @@ $env:BLACK_SOULS_GAME_EXE_SHA256 = '<YOUR_SHA256>'
 
 bs2 对应 `runtime/game2/Game.exe` 和 `BLACK_SOULS2_GAME_EXE_SHA256`。各自的指纹设为空字符串会跳过比较，但仍会检查必需文件是否存在；只有确认文件来源后才应这样做。
 
-## 环境变量
+<details>
+<summary>环境变量</summary>
 
 | 变量 | 说明 |
 |---|---|
@@ -227,18 +246,7 @@ bs2 对应 `runtime/game2/Game.exe` 和 `BLACK_SOULS2_GAME_EXE_SHA256`。各自�
 | `BLACK_SOULS_TEST_TEMP` | 单元测试临时目录 |
 | `BLACK_SOULS_EXPECTED_SAVE_COUNT` | 可选的集成测试最少存档数 |
 
-## 测试
-
-```powershell
-npm.cmd run check              # 构建、MCP 握手、工具发现与合成测试
-npm.cmd run test:integration   # 需要已准备的运行目录
-npm.cmd run test:live          # 启动游戏并执行真实键盘输入
-.\check.ps1 -IncludeRuntime    # 检查源码、游戏副本和 Codex 注册
-.\check.ps1 -IncludeRuntime -Game bs2    # 只读核对 bs2 的准备目录与指纹
-node evals\runner.mjs menu_navigation   # 运行一个评测场景（需要真实游戏）
-```
-
-真实测试会改变当前游戏会话中的位置或菜单，但不会主动保存。运行前仍建议保留自己的存档副本。
+</details>
 
 ## 限制与故障提示
 
@@ -259,6 +267,24 @@ node evals\runner.mjs menu_navigation   # 运行一个评测场景（需要真�
 ```powershell
 .\rollback.ps1 -ConfigBackup 'D:\BlackSoulsRuntime\backup\config.toml.before-black-souls-....bak'
 ```
+
+## 测试
+
+<details>
+<summary>测试命令</summary>
+
+```powershell
+npm.cmd run check              # 构建、MCP 握手、工具发现与合成测试
+npm.cmd run test:integration   # 需要已准备的运行目录
+npm.cmd run test:live          # 启动游戏并执行真实键盘输入
+.\check.ps1 -IncludeRuntime    # 检查源码、游戏副本和 Codex 注册
+.\check.ps1 -IncludeRuntime -Game bs2    # 只读核对 bs2 的准备目录与指纹
+node evals\runner.mjs menu_navigation   # 运行一个评测场景（需要真实游戏）
+```
+
+真实测试会改变当前游戏会话中的位置或菜单，但不会主动保存。运行前仍建议保留自己的存档副本。
+
+</details>
 
 ## 安全与隐私
 

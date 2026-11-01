@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440"
+     role="img" aria-labelledby="title desc">
+  <title id="title">How BLACK SOULS MCP works</title>
+  <desc id="desc">Input flows left to right: MCP client over stdio to black-souls-mcp, as inbox/*.cmd files into BridgeRuntime/, then into the game's RGSS3 Input. State flows right to left: Game.exe writes state/*.json about 10 times per second, replies go to outbox/&lt;id&gt;.json, and the server answers the client over stdio. No screenshots, no OCR, no mouse.</desc>
+
+  <rect width="1200" height="440" rx="20" fill="#120E16"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="438.5" rx="19.5" fill="none" stroke="#3A2E3F" stroke-width="1.5"/>
+
+  <text x="56" y="64" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="18" letter-spacing="1.5" fill="#8A8090">INPUT  →</text>
+  <text x="1144" y="410" text-anchor="end" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="18" letter-spacing="1.5" fill="#8A8090">←  STATE</text>
+
+  <path d="M 248 186 L 248 156 C 248 112 388 112 388 156 L 388 186 L 530 186 L 530 156 C 530 112 670 112 670 156 L 670 186 L 812 186 L 812 156 C 812 112 952 112 952 156 L 952 186" fill="none" stroke="#9E1B2A" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 952 258 L 952 288 C 952 332 812 332 812 288 L 812 258 L 670 258 L 670 288 C 670 332 530 332 530 288 L 530 258 L 388 258 L 388 288 C 388 332 248 332 248 288 L 248 258" fill="none" stroke="#C2A46B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(56 156)">
+    <rect width="242" height="132" rx="14" fill="#1A1520" stroke="#3A2E3F" stroke-width="1.5"/>
+    <text x="121" y="48" text-anchor="middle" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" font-size="28" font-weight="600" fill="#EDE6DA">MCP client</text>
+    <text x="121" y="84" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">Claude Code</text>
+    <text x="121" y="110" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">Codex</text>
+  </g>
+  <g transform="translate(338 156)">
+    <rect width="242" height="132" rx="14" fill="#1A1520" stroke="#3A2E3F" stroke-width="1.5"/>
+    <text x="121" y="48" text-anchor="middle" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" font-size="28" font-weight="600" fill="#EDE6DA">black-souls-mcp</text>
+    <text x="121" y="84" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">Node.js</text>
+    <text x="121" y="110" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">37 tools</text>
+  </g>
+  <g transform="translate(620 156)">
+    <rect width="242" height="132" rx="14" fill="#1A1520" stroke="#3A2E3F" stroke-width="1.5"/>
+    <text x="121" y="48" text-anchor="middle" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" font-size="28" font-weight="600" fill="#EDE6DA">BridgeRuntime/</text>
+    <text x="121" y="84" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">inbox · outbox</text>
+    <text x="121" y="110" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">state · map</text>
+  </g>
+  <g transform="translate(902 156)">
+    <rect width="242" height="132" rx="14" fill="#1A1520" stroke="#3A2E3F" stroke-width="1.5"/>
+    <text x="121" y="48" text-anchor="middle" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" font-size="28" font-weight="600" fill="#EDE6DA">Game.exe</text>
+    <text x="121" y="84" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">RGSS3 Input</text>
+    <text x="121" y="110" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#8A8090">Graphics.update</text>
+  </g>
+
+  <circle cx="248" cy="156" r="5" fill="#9E1B2A"/>
+  <circle cx="388" cy="156" r="5" fill="#9E1B2A"/>
+  <circle cx="530" cy="156" r="5" fill="#9E1B2A"/>
+  <circle cx="670" cy="156" r="5" fill="#9E1B2A"/>
+  <circle cx="812" cy="156" r="5" fill="#9E1B2A"/>
+  <circle cx="952" cy="156" r="5" fill="#9E1B2A"/>
+  <path d="M 312 116 L 323 123 L 312 130" fill="none" stroke="#9E1B2A" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="318" y="103" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">stdio</text>
+  <path d="M 594 116 L 605 123 L 594 130" fill="none" stroke="#9E1B2A" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="600" y="103" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">inbox/*.cmd</text>
+  <path d="M 876 116 L 887 123 L 876 130" fill="none" stroke="#9E1B2A" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="882" y="103" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">Input</text>
+  <path d="M 324 314 L 313 321 L 324 328" fill="none" stroke="#C2A46B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="318" y="357" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">stdio</text>
+  <path d="M 606 314 L 595 321 L 606 328" fill="none" stroke="#C2A46B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="600" y="357" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">outbox/&lt;id&gt;.json</text>
+  <path d="M 888 314 L 877 321 L 888 328" fill="none" stroke="#C2A46B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="882" y="357" text-anchor="middle" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="20" fill="#EDE6DA">state/*.json ~10/s</text>
+
+  <text x="56" y="410" font-family="ui-monospace, Consolas, Menlo, monospace" font-size="18" fill="#8A8090">no screenshots · no OCR · no mouse</text>
+</svg>
