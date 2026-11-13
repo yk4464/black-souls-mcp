@@ -61,7 +61,7 @@
     "node": ">=18"
   },
   "overrides": {
-    "@hono/node-server": "^2.1.5",
+    "@hono/node-server": "^2.1.8",
     "fast-uri": "^3.1.9",
     "hono": "^4.13.13",
     "ip-address": "^10.7.5",
